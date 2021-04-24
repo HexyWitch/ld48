@@ -1,6 +1,6 @@
 use anyhow::Error;
 use euclid::{
-    default::{Point2D, Rect, Size2D, Transform2D},
+    default::{Box2D, Point2D, Rect, Size2D, Transform2D},
     point2, size2,
 };
 use zerocopy::AsBytes;
@@ -55,6 +55,11 @@ impl Sprite {
     pub fn transform(&self) -> &Transform2D<f32> {
         &self.transform
     }
+
+    pub fn size(&self) -> Size2D<u32> {
+        let tex = &self.frames[0];
+        size2(tex[2] - tex[0], tex[3] - tex[1])
+    }
 }
 
 pub unsafe fn load_image(
@@ -76,26 +81,22 @@ pub unsafe fn load_image(
     Ok(texture_coords)
 }
 
-fn render_line(
-    segment: &mut Sprite,
-    end: &mut Sprite,
-    start_point: Point2D<f32>,
-    end_point: Point2D<f32>,
-    out: &mut Vec<Vertex>,
-) {
-    let angle = (end_point - start_point).angle_from_x_axis();
-
-    segment.set_transform(
-        Transform2D::create_scale(
-            (end_point - start_point).length()
-                / (segment.frames[0][2] as f32 - segment.frames[0][0] as f32),
-            1.0,
-        )
-        .post_rotate(-angle),
+pub unsafe fn load_raw_image(
+    bytes: &[u8],
+    height: u32,
+    width: u32,
+    texture_atlas: &mut TextureAtlas,
+    texture: &mut gl::Texture,
+) -> Result<TextureRect, Error> {
+    let texture_coords = texture_atlas.add_texture((width, height)).unwrap();
+    texture.write(
+        texture_coords[0],
+        texture_coords[1],
+        texture_coords[2] - texture_coords[0],
+        texture_coords[3] - texture_coords[1],
+        bytes,
     );
-    end.set_transform(Transform2D::create_rotation(-angle));
-    render_sprite(segment, 0, start_point, out);
-    render_sprite(end, 0, end_point, out);
+    Ok(texture_coords)
 }
 
 pub fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out: &mut Vec<Vertex>) {
@@ -148,13 +149,7 @@ pub fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out:
     ]);
 }
 
-pub fn render_quad(position: Point2D<f32>, tex_coords: TextureRect, out: &mut Vec<Vertex>) {
-    let size = size2(
-        (tex_coords[2] - tex_coords[0]) as f32,
-        (tex_coords[3] - tex_coords[1]) as f32,
-    );
-    let vertex_rect = Rect::new(position, size);
-
+pub fn render_quad(rect: Box2D<f32>, tex_coords: TextureRect, out: &mut Vec<Vertex>) {
     let uv_pos = point2(
         tex_coords[0] as f32 / TEXTURE_ATLAS_SIZE.width as f32,
         tex_coords[1] as f32 / TEXTURE_ATLAS_SIZE.height as f32,
@@ -167,27 +162,27 @@ pub fn render_quad(position: Point2D<f32>, tex_coords: TextureRect, out: &mut Ve
 
     out.extend_from_slice(&[
         Vertex {
-            position: vertex_rect.min().to_array(),
+            position: rect.min.to_array(),
             uv: [uv_rect.min_x(), uv_rect.max_y()],
         },
         Vertex {
-            position: [vertex_rect.max_x(), vertex_rect.min_y()],
+            position: [rect.max.x, rect.min.y],
             uv: [uv_rect.max_x(), uv_rect.max_y()],
         },
         Vertex {
-            position: [vertex_rect.min_x(), vertex_rect.max_y()],
+            position: [rect.min.x, rect.max.y],
             uv: [uv_rect.min_x(), uv_rect.min_y()],
         },
         Vertex {
-            position: [vertex_rect.max_x(), vertex_rect.min_y()],
+            position: [rect.max.x, rect.min.y],
             uv: [uv_rect.max_x(), uv_rect.max_y()],
         },
         Vertex {
-            position: vertex_rect.max().to_array(),
+            position: rect.max.to_array(),
             uv: [uv_rect.max_x(), uv_rect.min_y()],
         },
         Vertex {
-            position: [vertex_rect.min_x(), vertex_rect.max_y()],
+            position: [rect.min.x, rect.max.y],
             uv: [uv_rect.min_x(), uv_rect.min_y()],
         },
     ]);
