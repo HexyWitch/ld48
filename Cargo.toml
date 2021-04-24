@@ -13,7 +13,7 @@ thiserror = "1.0"
 zerocopy = "0.3"
 raw-window-handle = "0.3.3"
 image = "0.23.3"
-euclid = "0.20.10"
+euclid = "0.22"
 lewton = "0.7.0"
 rand = { version = "0.7.3", features = [ "small_rng" ] }
 

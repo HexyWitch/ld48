@@ -27,6 +27,9 @@ pub struct Game {
     rooms: HashMap<RoomColor, Room>,
     room_buffers: HashMap<RoomColor, gl::VertexBuffer>,
     room_blocks: HashMap<RoomColor, TextureRect>,
+
+    current_room: RoomColor,
+    enter_room: Option<RoomTransitionIn>,
 }
 
 impl Game {
@@ -58,6 +61,10 @@ impl Game {
                         gl::UniformEntry {
                             name: "u_texture",
                             ty: gl::UniformType::Texture,
+                        },
+                        gl::UniformEntry {
+                            name: "u_alpha",
+                            ty: gl::UniformType::Float,
                         },
                     ],
                     vertex_format: gl::VertexFormat {
@@ -91,23 +98,6 @@ impl Game {
                 .unwrap()
         };
         let mut atlas = TextureAtlas::new((TEXTURE_ATLAS_SIZE.width, TEXTURE_ATLAS_SIZE.height));
-
-        let transform =
-            Transform2D::create_scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
-                .post_scale(ZOOM_LEVEL, ZOOM_LEVEL)
-                .post_scale(TILE_SIZE as f32, TILE_SIZE as f32)
-                .post_scale(2., 2.)
-                .post_translate(vec2(-1.0, -1.0));
-        program
-            .set_uniform(
-                0,
-                gl::Uniform::Mat3([
-                    [transform.m11, transform.m12, 0.0],
-                    [transform.m21, transform.m22, 0.0],
-                    [transform.m31, transform.m32, 1.0],
-                ]),
-            )
-            .unwrap();
 
         program
             .set_uniform(1, gl::Uniform::Texture(&texture))
@@ -162,7 +152,7 @@ impl Game {
         }
         .unwrap();
 
-        let player = Player::new(player_rect, point2(5., 5.));
+        let player = Player::new(player_rect, point2(2., 2.));
 
         Game {
             program,
@@ -176,6 +166,9 @@ impl Game {
             rooms,
             room_buffers,
             room_blocks,
+
+            current_room: RoomColor::Blue,
+            enter_room: None,
         }
     }
 
@@ -202,7 +195,48 @@ impl Game {
             }
         }
 
-        let room = self.rooms.get(&RoomColor::Blue).unwrap();
+        if let Some(enter_room) = &mut self.enter_room {
+            enter_room.timer += TICK_DT;
+            if enter_room.timer > ENTER_ROOM_TIME {
+                self.current_room = enter_room.color;
+                let player_offset = vec2(0.5, -self.player.collision_rect.min_y());
+                self.player.position = match enter_room.entrance {
+                    RoomEntrance::Left => {
+                        self.rooms
+                            .get(&enter_room.color)
+                            .unwrap()
+                            .left_entrance
+                            .unwrap()
+                            .to_f32()
+                            + player_offset
+                    }
+                    RoomEntrance::Top => {
+                        self.rooms
+                            .get(&enter_room.color)
+                            .unwrap()
+                            .top_entrance
+                            .unwrap()
+                            .to_f32()
+                            + player_offset
+                    }
+                    RoomEntrance::Right => {
+                        self.rooms
+                            .get(&enter_room.color)
+                            .unwrap()
+                            .right_entrance
+                            .unwrap()
+                            .to_f32()
+                            + player_offset
+                    }
+                };
+                self.player.velocity = Vector2D::zero();
+                self.enter_room = None;
+            } else {
+                return;
+            }
+        }
+
+        let room = self.rooms.get(&self.current_room).unwrap();
 
         // Player controls
         let coyote_time = 0.1;
@@ -212,7 +246,7 @@ impl Game {
         let run_speed = 6.;
         let fall_speed = 15.;
         let gravity = -30.;
-        let jump_speed = 12.;
+        let jump_speed = 11.5;
 
         let mut x_dir: f32 = 0.;
         if self.controls.right {
@@ -259,38 +293,29 @@ impl Game {
             }
             let player_rect = self.player.collision_rect.translate(new_pos.to_vector());
 
-            let min_x = (player_rect.min_x() + 0.0001).floor() as i32;
-            let max_x = (player_rect.max_x() - 0.0001).floor() as i32;
-            let min_y = (player_rect.min_y() + 0.0001).floor() as i32;
-            let max_y = (player_rect.max_y() - 0.0001).floor() as i32;
-
             colliding = false;
             corrections.clear();
-            for x in min_x..=max_x {
-                for y in min_y..=max_y {
-                    let collides =
-                        if x < 0 || x >= ROOM_SIZE.0 as i32 || y < 0 || y >= ROOM_SIZE.1 as i32 {
-                            true
-                        } else {
-                            let cell = (y * ROOM_SIZE.0 as i32 + x) as usize;
-                            room[cell] != Tile::Empty
-                        };
-                    if collides {
-                        let tile_rect = Rect::new(point2(x as f32, y as f32), size2(1., 1.));
 
-                        // push the player right
-                        corrections.push(vec2(tile_rect.max_x() - player_rect.min_x(), 0.));
-                        // push the player left
-                        corrections.push(vec2(tile_rect.min_x() - player_rect.max_x(), 0.));
-                        // push the player up
-                        corrections.push(vec2(0., tile_rect.max_y() - player_rect.min_y()));
-                        // push the player down
-                        corrections.push(vec2(0., tile_rect.min_y() - player_rect.max_y()));
+            let shrunk_player_rect = Rect::new(
+                player_rect.origin + vec2(0.0001, 0.0001),
+                player_rect.size - size2(0.0002, 0.002),
+            );
+            room.for_each_tile_in_rect(shrunk_player_rect, |pos, tile| {
+                if tile != Tile::Empty {
+                    let tile_rect = Rect::new(point2(pos.x as f32, pos.y as f32), size2(1., 1.));
 
-                        colliding = true;
-                    }
+                    // push the player right
+                    corrections.push(vec2(tile_rect.max_x() - player_rect.min_x(), 0.));
+                    // push the player left
+                    corrections.push(vec2(tile_rect.min_x() - player_rect.max_x(), 0.));
+                    // push the player up
+                    corrections.push(vec2(0., tile_rect.max_y() - player_rect.min_y()));
+                    // push the player down
+                    corrections.push(vec2(0., tile_rect.min_y() - player_rect.max_y()));
+
+                    colliding = true;
                 }
-            }
+            });
 
             if !colliding {
                 break;
@@ -352,26 +377,208 @@ impl Game {
         }
 
         self.player.position = new_pos;
+
+        // Player block interaction
+        let player_interact_rect = self
+            .player
+            .interact_rect
+            .translate(self.player.position.to_vector());
+
+        let enter_room = &mut self.enter_room;
+        let player_position = self.player.position;
+        let rooms = &self.rooms;
+        room.for_each_tile_in_rect(player_interact_rect, move |pos, tile| {
+            if let Tile::Room(color) = tile {
+                let left_enter_region = Rect::new(pos.to_f32() + vec2(-1., 0.), size2(1., 1.));
+                if left_enter_region.contains(player_position) {
+                    if rooms.get(&color).unwrap().left_entrance.is_some() {
+                        *enter_room = Some(RoomTransitionIn {
+                            position: pos,
+                            entrance: RoomEntrance::Left,
+                            color,
+                            timer: 0.,
+                        });
+                    }
+                }
+
+                let top_enter_region = Rect::new(pos.to_f32() + vec2(0., 1.), size2(1., 1.));
+                if top_enter_region.contains(player_position) {
+                    if rooms.get(&color).unwrap().top_entrance.is_some() {
+                        *enter_room = Some(RoomTransitionIn {
+                            position: pos,
+                            entrance: RoomEntrance::Top,
+                            color,
+                            timer: 0.,
+                        });
+                    }
+                }
+
+                let right_enter_region = Rect::new(pos.to_f32() + vec2(1., 0.), size2(1., 1.));
+                if right_enter_region.contains(player_position) {
+                    if rooms.get(&color).unwrap().left_entrance.is_some() {
+                        *enter_room = Some(RoomTransitionIn {
+                            position: pos,
+                            entrance: RoomEntrance::Right,
+                            color,
+                            timer: 0.,
+                        });
+                    }
+                }
+            }
+        });
     }
 
     pub fn draw(&mut self, context: &mut gl::Context) {
-        let mut entity_vertices = Vec::new();
-        render_sprite(
-            &self.player.sprite,
-            0,
-            self.player.position,
-            &mut entity_vertices,
-        );
-
         unsafe {
-            context.clear([0.5, 0.5, 0.8, 1.0]);
+            let bg_color = room_block_colors(self.current_room).background;
+            context.clear([
+                bg_color.0 as f32 / 255.,
+                bg_color.1 as f32 / 255.,
+                bg_color.2 as f32 / 255.,
+                1.0,
+            ]);
+        }
 
-            self.vertex_buffer.write(&entity_vertices);
-            self.program.render_vertices(&self.vertex_buffer).unwrap();
+        let mut entity_vertices = Vec::new();
 
-            self.program
-                .render_vertices(self.room_buffers.get(&RoomColor::Blue).as_ref().unwrap())
+        self.program
+            .set_uniform(2, gl::Uniform::Float(1.0))
+            .unwrap();
+
+        if let Some(enter_room) = &self.enter_room {
+            let player_offset = vec2(0.5, -self.player.collision_rect.min_y());
+            let room_entrance = self
+                .rooms
+                .get(&enter_room.color)
+                .unwrap()
+                .entrance(enter_room.entrance)
                 .unwrap();
+
+            let ratio = enter_room.timer / ENTER_ROOM_TIME;
+
+            // Shrink player and move them to the entrance of the next room
+            let player_shrink_time = ENTER_ROOM_TIME * 0.75;
+            let shrink_ratio = (enter_room.timer / player_shrink_time).min(1.0);
+            let player_scale = lerp(shrink_ratio, 1., 1. / TILE_SIZE);
+
+            let entrance_offset = match enter_room.entrance {
+                RoomEntrance::Left => vec2(-2.0, 0.0),
+                RoomEntrance::Top => vec2(0.0, 2.0),
+                RoomEntrance::Right => vec2(2.0, 0.0),
+            };
+            let outside_entrance_pos = enter_room.position.to_f32()
+                + (room_entrance.to_f32().to_vector() + player_offset) / TILE_SIZE
+                + entrance_offset / TILE_SIZE;
+            let player_pos = if enter_room.timer < player_shrink_time {
+                // first move player to just outside the entrance
+                self.player.position + (outside_entrance_pos - self.player.position) * shrink_ratio
+            } else {
+                let r = (enter_room.timer - player_shrink_time)
+                    / (ENTER_ROOM_TIME - player_shrink_time);
+                let room_entrance_pos = enter_room.position.to_f32()
+                    + (room_entrance.to_f32().to_vector() + player_offset) / TILE_SIZE;
+                outside_entrance_pos + (room_entrance_pos - outside_entrance_pos) * r
+            };
+            self.player.sprite.set_transform(
+                Transform2D::translation(-7.5, -7.5)
+                    .then_scale(1. / TILE_SIZE, 1. / TILE_SIZE)
+                    .then_scale(player_scale, player_scale),
+            );
+            render_sprite(&self.player.sprite, 0, player_pos, &mut entity_vertices);
+
+            let room_position = enter_room.position.to_f32().to_vector();
+
+            let camera_bl = enter_room.position.to_f32().to_vector() * ratio;
+            let from_camera_tr = point2(ROOM_SIZE.0, ROOM_SIZE.1).to_f32();
+            let to_camera_tr = enter_room.position.to_f32() + vec2(1.0, 1.0);
+            let camera_tr = from_camera_tr + (to_camera_tr - from_camera_tr) * ratio;
+            let camera_scale = ROOM_SIZE.0 as f32 / (camera_tr.x - camera_bl.x);
+            let transform = Transform2D::translation(-camera_bl.x, -camera_bl.y)
+                .then_scale(camera_scale, camera_scale)
+                .then_scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
+                .then_scale(ZOOM_LEVEL, ZOOM_LEVEL)
+                .then_scale(TILE_SIZE as f32, TILE_SIZE as f32)
+                .then_scale(2., 2.)
+                .then_translate(vec2(-1.0, -1.0));
+            self.program
+                .set_uniform(
+                    0,
+                    gl::Uniform::Mat3([
+                        [transform.m11, transform.m12, 0.0],
+                        [transform.m21, transform.m22, 0.0],
+                        [transform.m31, transform.m32, 1.0],
+                    ]),
+                )
+                .unwrap();
+
+            unsafe {
+                self.vertex_buffer.write(&entity_vertices);
+
+                self.program
+                    .render_vertices(self.room_buffers.get(&self.current_room).as_ref().unwrap())
+                    .unwrap();
+
+                self.program.render_vertices(&self.vertex_buffer).unwrap();
+
+                let alpha = ((ratio - 0.5) / 0.5).max(0.0);
+                self.program
+                    .set_uniform(2, gl::Uniform::Float(alpha))
+                    .unwrap();
+
+                let sub_room_transform =
+                    Transform2D::scale(1. / ROOM_SIZE.0 as f32, 1. / ROOM_SIZE.1 as f32)
+                        .then_translate(room_position)
+                        .then(&transform);
+                self.program
+                    .set_uniform(
+                        0,
+                        gl::Uniform::Mat3([
+                            [sub_room_transform.m11, sub_room_transform.m12, 0.0],
+                            [sub_room_transform.m21, sub_room_transform.m22, 0.0],
+                            [sub_room_transform.m31, sub_room_transform.m32, 1.0],
+                        ]),
+                    )
+                    .unwrap();
+                self.program
+                    .render_vertices(self.room_buffers.get(&enter_room.color).as_ref().unwrap())
+                    .unwrap();
+            }
+        } else {
+            let transform =
+                Transform2D::scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
+                    .then_scale(ZOOM_LEVEL, ZOOM_LEVEL)
+                    .then_scale(TILE_SIZE as f32, TILE_SIZE as f32)
+                    .then_scale(2., 2.)
+                    .then_translate(vec2(-1.0, -1.0));
+            self.program
+                .set_uniform(
+                    0,
+                    gl::Uniform::Mat3([
+                        [transform.m11, transform.m12, 0.0],
+                        [transform.m21, transform.m22, 0.0],
+                        [transform.m31, transform.m32, 1.0],
+                    ]),
+                )
+                .unwrap();
+
+            self.player.sprite.set_transform(
+                Transform2D::translation(-7.5, -7.5).then_scale(1. / TILE_SIZE, 1. / TILE_SIZE),
+            );
+            render_sprite(
+                &self.player.sprite,
+                0,
+                self.player.position,
+                &mut entity_vertices,
+            );
+
+            unsafe {
+                self.vertex_buffer.write(&entity_vertices);
+                self.program.render_vertices(&self.vertex_buffer).unwrap();
+
+                self.program
+                    .render_vertices(self.room_buffers.get(&self.current_room).as_ref().unwrap())
+                    .unwrap();
+            }
         }
     }
 }
@@ -440,7 +647,7 @@ impl TileImages {
 fn build_room_vertex_buffer(
     gl_context: &mut gl::Context,
     room_block_textures: &HashMap<RoomColor, TextureRect>,
-    room: &[Tile],
+    room: &Room,
     tile_images: &TileImages,
 ) -> gl::VertexBuffer {
     let mut vertices: Vec<Vertex> = Vec::with_capacity(ROOM_CELLS as usize * 4 * 4);
@@ -449,12 +656,12 @@ fn build_room_vertex_buffer(
             Tile::Solid
         } else {
             let cell = (y as u32 * ROOM_SIZE.0 + x as u32) as usize;
-            room[cell]
+            room.tiles[cell]
         }
     };
 
     let mut room_blocks = Vec::new();
-    for (cell, tile) in room.iter().enumerate() {
+    for (cell, tile) in room.tiles.iter().enumerate() {
         let y = (cell as u32 / ROOM_SIZE.0) as i32;
         let x = (cell as u32 % ROOM_SIZE.0) as i32;
         if *tile == Tile::Empty {
@@ -477,11 +684,14 @@ fn build_room_vertex_buffer(
             get_tile(x, y - 1),
         );
 
-        let rect = Rect::new(point2(x as f32, y as f32), size2(1., 1.));
+        let rect = Box2D::new(
+            point2(x as f32, y as f32),
+            point2((x + 1) as f32, (y + 1) as f32),
+        );
         let mid = Point2D::new(x as f32 + (8. / TILE_SIZE), y as f32 + (7. / TILE_SIZE));
 
         // top left rect
-        let tl_box = Box2D::new(point2(rect.min_x(), mid.y), point2(mid.x, rect.max_y()));
+        let tl_box = Box2D::new(point2(rect.min.x, mid.y), point2(mid.x, rect.max.y));
         if l != Tile::Solid && t != Tile::Solid {
             graphics::render_quad(tl_box, tile_images.tl_outer_corner, &mut vertices);
         } else if l == Tile::Solid && t != Tile::Solid {
@@ -493,7 +703,7 @@ fn build_room_vertex_buffer(
         }
 
         // top right rect
-        let tr_box = Box2D::new(point2(mid.x, mid.y), point2(rect.max_x(), rect.max_y()));
+        let tr_box = Box2D::new(point2(mid.x, mid.y), rect.max);
         if r != Tile::Solid && t != Tile::Solid {
             graphics::render_quad(tr_box, tile_images.tr_outer_corner, &mut vertices);
         } else if r == Tile::Solid && t != Tile::Solid {
@@ -505,7 +715,7 @@ fn build_room_vertex_buffer(
         }
 
         // bottom left rect
-        let bl_box = Box2D::new(rect.min(), mid);
+        let bl_box = Box2D::new(rect.min, mid);
         if l != Tile::Solid && b != Tile::Solid {
             graphics::render_quad(bl_box, tile_images.bl_outer_corner, &mut vertices);
         } else if l == Tile::Solid && b != Tile::Solid {
@@ -517,7 +727,7 @@ fn build_room_vertex_buffer(
         }
 
         // bottom right rect
-        let br_box = Box2D::new(point2(mid.x, rect.min_y()), point2(rect.max_x(), mid.y));
+        let br_box = Box2D::new(point2(mid.x, rect.min.y), point2(rect.max.x, mid.y));
         if r != Tile::Solid && b != Tile::Solid {
             graphics::render_quad(br_box, tile_images.br_outer_corner, &mut vertices);
         } else if r == Tile::Solid && b != Tile::Solid {
@@ -570,7 +780,7 @@ fn create_room_block(room: &Room, color: RoomColor) -> Vec<u8> {
             Tile::Solid
         } else {
             let cell = (y as u32 * ROOM_SIZE.0 + x as u32) as usize;
-            room[cell]
+            room.tiles[cell]
         }
     };
     let tile_at = |x: i32, y: i32| -> bool { get_tile(x, y) != Tile::Empty };
@@ -597,7 +807,7 @@ fn create_room_block(room: &Room, color: RoomColor) -> Vec<u8> {
             } else if y > ROOM_SIZE.1
                 && x >= 1
                 && x < ROOM_BLOCK_IMAGE_SIZE.0 - 1
-                && tile_at(tile_x, tile_y + 1)
+                && tile_at(tile_x, tile_y - 1)
             {
                 set_pixel(x, y, colors.outer_border);
             }
@@ -645,13 +855,14 @@ struct Player {
     sprite: Sprite,
 
     collision_rect: Rect<f32>,
+    interact_rect: Rect<f32>,
 }
 
 impl Player {
     pub fn new(texture: TextureRect, position: Point2D<f32>) -> Player {
         let mut player_sprite = Sprite::new(texture, 1, point2(0., 0.));
         player_sprite.set_transform(
-            Transform2D::create_translation(-7.5, -7.5).post_scale(1. / TILE_SIZE, 1. / TILE_SIZE),
+            Transform2D::translation(-7.5, -7.5).then_scale(1. / TILE_SIZE, 1. / TILE_SIZE),
         );
 
         Player {
@@ -665,6 +876,10 @@ impl Player {
             collision_rect: Rect::new(
                 point2(-3.0 / TILE_SIZE, -7.5 / TILE_SIZE),
                 size2(6. / TILE_SIZE, 14. / TILE_SIZE),
+            ),
+            interact_rect: Rect::new(
+                point2(-3.5 / TILE_SIZE, -8.0 / TILE_SIZE),
+                size2(7. / TILE_SIZE, 14.5 / TILE_SIZE),
             ),
         }
     }
@@ -706,24 +921,106 @@ fn room_block_colors(color: RoomColor) -> RoomBlockColors {
     }
 }
 
-type Room = [Tile; ROOM_CELLS];
+const ENTER_ROOM_TIME: f32 = 1.0;
 
-fn parse_room(level: &str) -> [Tile; ROOM_CELLS] {
+struct RoomTransitionIn {
+    position: Point2D<i32>,
+    entrance: RoomEntrance,
+    color: RoomColor,
+    timer: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RoomEntrance {
+    Left,
+    Right,
+    Top,
+}
+
+struct Room {
+    tiles: [Tile; ROOM_CELLS],
+    left_entrance: Option<Point2D<i32>>,
+    top_entrance: Option<Point2D<i32>>,
+    right_entrance: Option<Point2D<i32>>,
+}
+
+impl Room {
+    pub fn for_each_tile_in_rect(
+        &self,
+        bound_rect: Rect<f32>,
+        mut f: impl FnMut(Point2D<i32>, Tile),
+    ) {
+        let min_x = (bound_rect.min_x()).floor() as i32;
+        let max_x = (bound_rect.max_x()).floor() as i32;
+        let min_y = (bound_rect.min_y()).floor() as i32;
+        let max_y = (bound_rect.max_y()).floor() as i32;
+
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                let pos = point2(x, y);
+                let tile = if x < 0 || x >= ROOM_SIZE.0 as i32 || y < 0 || y >= ROOM_SIZE.1 as i32 {
+                    Tile::Solid
+                } else {
+                    let cell = (y * ROOM_SIZE.0 as i32 + x) as usize;
+                    self.tiles[cell]
+                };
+                f(pos, tile)
+            }
+        }
+    }
+
+    fn entrance(&self, entrance: RoomEntrance) -> Option<Point2D<i32>> {
+        match entrance {
+            RoomEntrance::Left => self.left_entrance,
+            RoomEntrance::Top => self.top_entrance,
+            RoomEntrance::Right => self.right_entrance,
+        }
+    }
+}
+
+fn parse_room(level: &str) -> Room {
     let mut tiles = [Tile::Empty; ROOM_CELLS];
+
+    let mut left_entrance = None;
+    let mut top_entrance = None;
+    let mut right_entrance = None;
+
     for (y, line) in level.lines().enumerate() {
         for (x, c) in line.chars().enumerate() {
             // flip y
             let y = ROOM_SIZE.1 as usize - 1 - y;
             let cell = y * ROOM_SIZE.0 as usize + x;
-            tiles[cell] = match c {
+            let tile = match c {
                 ' ' => Tile::Empty,
                 '#' => Tile::Solid,
                 'B' => Tile::Room(RoomColor::Blue),
                 c @ _ => {
                     panic!("Unrecognized tile identifier '{}'", c);
                 }
+            };
+
+            let tile_pos = point2(x as i32, y as i32);
+            if x == 0 && tile == Tile::Empty {
+                left_entrance = Some(tile_pos);
             }
+            if x as u32 == ROOM_SIZE.0 - 1 && tile == Tile::Empty {
+                right_entrance = Some(tile_pos);
+            }
+            if y as u32 == ROOM_SIZE.1 - 1 && tile == Tile::Empty {
+                top_entrance = Some(tile_pos);
+            }
+            tiles[cell] = tile;
         }
     }
-    tiles
+
+    Room {
+        tiles,
+        left_entrance,
+        top_entrance,
+        right_entrance,
+    }
+}
+
+fn lerp(x: f32, a: f32, b: f32) -> f32 {
+    a + (b - a) * x
 }

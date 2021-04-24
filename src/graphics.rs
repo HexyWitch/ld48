@@ -43,13 +43,12 @@ impl Sprite {
             frames,
             frame_count,
             origin,
-            transform: Transform2D::create_translation(-origin.x, -origin.y),
+            transform: Transform2D::translation(-origin.x, -origin.y),
         }
     }
 
     pub fn set_transform(&mut self, t: Transform2D<f32>) {
-        self.transform =
-            Transform2D::create_translation(-self.origin.x, -self.origin.y).post_transform(&t);
+        self.transform = Transform2D::translation(-self.origin.x, -self.origin.y).then(&t);
     }
 
     pub fn transform(&self) -> &Transform2D<f32> {

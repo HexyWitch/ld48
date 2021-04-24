@@ -369,7 +369,7 @@ impl Program {
 
     pub unsafe fn render_vertices(&self, vertex_buffer: &VertexBuffer) -> Result<(), GLError> {
         self.context
-            .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            .blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
         self.context.enable(glow::BLEND);
 
         self.context
