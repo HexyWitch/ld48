@@ -1,0 +1,41 @@
+[package]
+name = "ld48"
+version = "0.1.0"
+authors = ["William Lundstedt <walundstedt@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4"
+anyhow = "1.0"
+thiserror = "1.0"
+zerocopy = "0.3"
+raw-window-handle = "0.3.3"
+image = "0.23.3"
+euclid = "0.20.10"
+lewton = "0.7.0"
+rand = { version = "0.7.3", features = [ "small_rng" ] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+glutin = "0.24"
+env_logger = "0.7.1"
+glow = "0.4"
+cpal = "0.11.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.6"
+console_log = "0.1.2"
+glow = { version = "0.4", features = ["web-sys"] }
+wasm-bindgen = "=0.2.69"
+wasm-bindgen-futures = { version = "0.4.0" }
+web-sys = { version = "0.3.37", features = [
+    "AudioContext",
+    "ScriptProcessorNode",
+    "AudioProcessingEvent",
+    "AudioBuffer",
+    "AudioDestinationNode",
+    "KeyboardEvent",
+    "MouseEvent",
+    "WheelEvent",
+] }

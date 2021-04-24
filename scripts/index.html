@@ -1,0 +1,13 @@
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <script src='./ld48.js'></script>
+    <script>
+        window.addEventListener("load", () => {
+            wasm_bindgen('./ld48_bg.wasm').catch(console.error);
+        })
+    </script>
+</head>
+
+</html>
