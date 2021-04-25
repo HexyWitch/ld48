@@ -13,8 +13,8 @@ use crate::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug, AsBytes)]
 pub struct Vertex {
-    position: [f32; 2],
-    uv: [f32; 2],
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
 }
 
 #[derive(Clone)]

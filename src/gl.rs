@@ -4,17 +4,21 @@ use glow::HasContext;
 use thiserror::Error;
 use zerocopy::AsBytes;
 
+use crate::constants::SCREEN_SIZE;
+
 type VertexArrayId = <glow::Context as glow::HasContext>::VertexArray;
 type BufferId = <glow::Context as glow::HasContext>::Buffer;
 type UniformLocationId = <glow::Context as glow::HasContext>::UniformLocation;
 type ProgramId = <glow::Context as glow::HasContext>::Program;
 type ShaderId = <glow::Context as glow::HasContext>::Shader;
 type TextureId = <glow::Context as glow::HasContext>::Texture;
+type FramebufferId = <glow::Context as glow::HasContext>::Framebuffer;
 
 pub struct Shader(Rc<ShaderId>);
 pub struct Texture {
     context: Rc<glow::Context>,
     texture_id: Rc<TextureId>,
+    size: (i32, i32),
     format: TextureFormat,
 }
 pub struct VertexBuffer {
@@ -31,6 +35,7 @@ pub struct Context {
     vertex_arrays: Vec<Rc<VertexArrayId>>,
     buffers: Vec<Rc<BufferId>>,
     textures: Vec<Rc<TextureId>>,
+    frame_buffers: Vec<Rc<FramebufferId>>,
 }
 
 #[derive(Debug, Error)]
@@ -46,6 +51,7 @@ impl Context {
             vertex_arrays: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
+            frame_buffers: Vec::new(),
         }
     }
 
@@ -144,6 +150,33 @@ impl Context {
         })
     }
 
+    pub unsafe fn create_texture_render_target(
+        &mut self,
+        texture: &Texture,
+    ) -> TextureRenderTarget {
+        let framebuffer = Rc::new(self.context.create_framebuffer().unwrap());
+        self.frame_buffers.push(Rc::clone(&framebuffer));
+
+        self.context
+            .bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer));
+        self.context
+            .bind_texture(glow::TEXTURE_2D, Some(*texture.texture_id));
+
+        self.context.framebuffer_texture_2d(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(*texture.texture_id),
+            0,
+        );
+
+        TextureRenderTarget {
+            texture: Rc::clone(&texture.texture_id),
+            framebuffer,
+            size: texture.size,
+        }
+    }
+
     pub unsafe fn create_texture(
         &mut self,
         format: TextureFormat,
@@ -211,6 +244,7 @@ impl Context {
         Ok(Texture {
             context: self.context.clone(),
             texture_id,
+            size: (width as i32, height as i32),
             format,
         })
     }
@@ -246,9 +280,24 @@ impl Context {
                 self.context.delete_texture(*texture);
             }
         }
+        for i in (0..self.frame_buffers.len()).rev() {
+            if Rc::strong_count(&self.frame_buffers[i]) == 1 {
+                let framebuffer = self.frame_buffers.swap_remove(i);
+                self.context.delete_framebuffer(*framebuffer);
+            }
+        }
     }
 
-    pub unsafe fn clear(&mut self, color: [f32; 4]) {
+    pub unsafe fn clear(&mut self, target: RenderTarget, color: [f32; 4]) {
+        match target {
+            RenderTarget::Screen => {
+                self.context.bind_framebuffer(glow::FRAMEBUFFER, None);
+            }
+            RenderTarget::Texture(framebuffer) => {
+                self.context
+                    .bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer.framebuffer));
+            }
+        }
         self.context
             .clear_color(color[0], color[1], color[2], color[3]);
         self.context.clear(glow::COLOR_BUFFER_BIT);
@@ -367,7 +416,11 @@ impl Program {
         Ok(())
     }
 
-    pub unsafe fn render_vertices(&self, vertex_buffer: &VertexBuffer) -> Result<(), GLError> {
+    pub unsafe fn render_vertices(
+        &self,
+        vertex_buffer: &VertexBuffer,
+        target: RenderTarget,
+    ) -> Result<(), GLError> {
         self.context
             .blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
         self.context.enable(glow::BLEND);
@@ -378,6 +431,20 @@ impl Program {
             .bind_buffer(glow::ARRAY_BUFFER, Some(*vertex_buffer.buffer));
 
         self.context.use_program(Some(*self.program_id));
+
+        match target {
+            RenderTarget::Screen => {
+                self.context
+                    .viewport(0, 0, SCREEN_SIZE.0 as i32, SCREEN_SIZE.1 as i32);
+                self.context.bind_framebuffer(glow::FRAMEBUFFER, None);
+            }
+            RenderTarget::Texture(framebuffer) => {
+                self.context
+                    .viewport(0, 0, framebuffer.size.0, framebuffer.size.1);
+                self.context
+                    .bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer.framebuffer));
+            }
+        }
 
         let mut texture_index = 0;
         for (i, (location, uniform_value)) in self.set_uniforms.iter().enumerate() {
@@ -471,6 +538,17 @@ impl Program {
 
         Ok(())
     }
+}
+
+pub struct TextureRenderTarget {
+    framebuffer: Rc<<glow::Context as glow::HasContext>::Framebuffer>,
+    texture: Rc<TextureId>,
+    size: (i32, i32),
+}
+
+pub enum RenderTarget<'a> {
+    Screen,
+    Texture(&'a TextureRenderTarget),
 }
 
 enum SetUniformValue {

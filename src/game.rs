@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Error;
 use euclid::{
-    default::{Box2D, Point2D, Rect, Transform2D, Vector2D},
+    default::{Box2D, Point2D, Rect, Size2D, Transform2D, Vector2D},
     point2, size2, vec2,
 };
 
@@ -17,7 +17,9 @@ use crate::{
 
 pub struct Game {
     program: gl::Program,
+    room_vertex_buffer: gl::VertexBuffer,
     vertex_buffer: gl::VertexBuffer,
+    atlas_texture: gl::Texture,
 
     mixer: Arc<Mixer>,
 
@@ -25,7 +27,7 @@ pub struct Game {
     player: Player,
 
     rooms: HashMap<RoomColor, Room>,
-    room_buffers: HashMap<RoomColor, gl::VertexBuffer>,
+    room_textures: HashMap<RoomColor, gl::Texture>,
     room_blocks: HashMap<RoomColor, TextureRect>,
 
     current_room: RoomColor,
@@ -88,7 +90,7 @@ impl Game {
                 .unwrap()
         };
 
-        let mut texture = unsafe {
+        let mut atlas_texture = unsafe {
             gl_context
                 .create_texture(
                     gl::TextureFormat::RGBAFloat,
@@ -99,11 +101,36 @@ impl Game {
         };
         let mut atlas = TextureAtlas::new((TEXTURE_ATLAS_SIZE.width, TEXTURE_ATLAS_SIZE.height));
 
-        program
-            .set_uniform(1, gl::Uniform::Texture(&texture))
-            .unwrap();
-
         let vertex_buffer = unsafe { gl_context.create_vertex_buffer().unwrap() };
+
+        let mut room_vertex_buffer = unsafe { gl_context.create_vertex_buffer().unwrap() };
+        let room_vertices = vec![
+            Vertex {
+                position: [0.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [ROOM_SIZE.0 as f32, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [0.0, ROOM_SIZE.1 as f32],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [ROOM_SIZE.0 as f32, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [ROOM_SIZE.0 as f32, ROOM_SIZE.1 as f32],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.0, ROOM_SIZE.1 as f32],
+                uv: [0.0, 1.0],
+            },
+        ];
+        unsafe { room_vertex_buffer.write(&room_vertices) };
 
         let controls = Controls::default();
 
@@ -111,7 +138,7 @@ impl Game {
             load_image(
                 include_bytes!("../assets/block.png"),
                 &mut atlas,
-                &mut texture,
+                &mut atlas_texture,
             )
         }
         .unwrap();
@@ -119,7 +146,7 @@ impl Game {
         let tile_images = TileImages::new(tile_sheet);
 
         let mut rooms = HashMap::new();
-        let mut room_buffers = HashMap::new();
+        let mut room_textures = HashMap::new();
         let mut room_blocks = HashMap::new();
 
         let blue_room = parse_room(include_str!("../assets/rooms/blue.rum"));
@@ -131,7 +158,7 @@ impl Game {
                 ROOM_BLOCK_IMAGE_SIZE.0,
                 ROOM_BLOCK_IMAGE_SIZE.1,
                 &mut atlas,
-                &mut texture,
+                &mut atlas_texture,
             )
             .unwrap()
         };
@@ -139,7 +166,47 @@ impl Game {
 
         let blue_room_buffer =
             build_room_vertex_buffer(gl_context, &room_blocks, &blue_room, &tile_images);
-        room_buffers.insert(RoomColor::Blue, blue_room_buffer);
+        let room_pixel_size = Size2D::new(ROOM_SIZE.0, ROOM_SIZE.1).to_f32() * TILE_SIZE;
+        let transform = Transform2D::scale(
+            1.0 / room_pixel_size.width as f32,
+            1.0 / room_pixel_size.height as f32,
+        )
+        .then_scale(TILE_SIZE as f32, TILE_SIZE as f32)
+        .then_scale(2., 2.)
+        .then_translate(vec2(-1.0, -1.0));
+        program
+            .set_uniform(
+                0,
+                gl::Uniform::Mat3([
+                    [transform.m11, transform.m12, 0.0],
+                    [transform.m21, transform.m22, 0.0],
+                    [transform.m31, transform.m32, 1.0],
+                ]),
+            )
+            .unwrap();
+        program
+            .set_uniform(1, gl::Uniform::Texture(&atlas_texture))
+            .unwrap();
+        program.set_uniform(2, gl::Uniform::Float(1.0)).unwrap();
+
+        unsafe {
+            let room_texture = gl_context
+                .create_texture(
+                    gl::TextureFormat::RGBAFloat,
+                    room_pixel_size.width as u32,
+                    room_pixel_size.height as u32,
+                )
+                .unwrap();
+            let room_render_target = gl_context.create_texture_render_target(&room_texture);
+
+            program
+                .render_vertices(
+                    &blue_room_buffer,
+                    gl::RenderTarget::Texture(&room_render_target),
+                )
+                .unwrap();
+            room_textures.insert(RoomColor::Blue, room_texture);
+        }
 
         rooms.insert(RoomColor::Blue, blue_room);
 
@@ -147,7 +214,7 @@ impl Game {
             load_image(
                 include_bytes!("../assets/player.png"),
                 &mut atlas,
-                &mut texture,
+                &mut atlas_texture,
             )
         }
         .unwrap();
@@ -156,7 +223,10 @@ impl Game {
 
         Game {
             program,
+            room_vertex_buffer,
             vertex_buffer,
+
+            atlas_texture,
 
             mixer,
 
@@ -164,7 +234,7 @@ impl Game {
             player,
 
             rooms,
-            room_buffers,
+            room_textures,
             room_blocks,
 
             current_room: RoomColor::Blue,
@@ -254,6 +324,17 @@ impl Game {
         }
         if self.controls.left {
             x_dir -= 1.;
+        }
+
+        if x_dir.abs() > 0.0001 && self.player.velocity.x.abs() > 0. {
+            if self.player.animation_timer < 0. {
+                self.player.animation_timer = 0.;
+            }
+            self.player.flip = x_dir < 0.;
+            self.player.animation_timer =
+                (self.player.animation_timer + TICK_DT) % RUN_ANIMATION_TIME;
+        } else {
+            self.player.animation_timer = -1.;
         }
 
         let on_ground = self.player.since_on_ground == 0.;
@@ -431,13 +512,27 @@ impl Game {
     pub fn draw(&mut self, context: &mut gl::Context) {
         unsafe {
             let bg_color = room_block_colors(self.current_room).background;
-            context.clear([
-                bg_color.0 as f32 / 255.,
-                bg_color.1 as f32 / 255.,
-                bg_color.2 as f32 / 255.,
-                1.0,
-            ]);
+            context.clear(
+                gl::RenderTarget::Screen,
+                [
+                    bg_color.0 as f32 / 255.,
+                    bg_color.1 as f32 / 255.,
+                    bg_color.2 as f32 / 255.,
+                    1.0,
+                ],
+            );
         }
+
+        let player_frame = if self.player.velocity.y > 0. {
+            7
+        } else if self.player.velocity.y < 0. {
+            8
+        } else if self.player.animation_timer > 0. {
+            1 + (self.player.animation_timer / RUN_ANIMATION_TIME * 6.).floor() as usize
+        } else {
+            0
+        };
+        let player_x_flip = if self.player.flip { -1. } else { 1. };
 
         let mut entity_vertices = Vec::new();
 
@@ -457,8 +552,12 @@ impl Game {
             let ratio = enter_room.timer / ENTER_ROOM_TIME;
 
             // Shrink player and move them to the entrance of the next room
+            let player_shrink_start = ENTER_ROOM_TIME * 0.25;
             let player_shrink_time = ENTER_ROOM_TIME * 0.75;
-            let shrink_ratio = (enter_room.timer / player_shrink_time).min(1.0);
+            let shrink_ratio = ((enter_room.timer - player_shrink_start)
+                / (player_shrink_time - player_shrink_start))
+                .min(1.0)
+                .max(0.);
             let player_scale = lerp(shrink_ratio, 1., 1. / TILE_SIZE);
 
             let entrance_offset = match enter_room.entrance {
@@ -481,13 +580,19 @@ impl Game {
             };
             self.player.sprite.set_transform(
                 Transform2D::translation(-7.5, -7.5)
-                    .then_scale(1. / TILE_SIZE, 1. / TILE_SIZE)
+                    .then_scale(1. / TILE_SIZE * player_x_flip, 1. / TILE_SIZE)
                     .then_scale(player_scale, player_scale),
             );
-            render_sprite(&self.player.sprite, 0, player_pos, &mut entity_vertices);
+            render_sprite(
+                &self.player.sprite,
+                player_frame,
+                player_pos,
+                &mut entity_vertices,
+            );
 
             let room_position = enter_room.position.to_f32().to_vector();
 
+            let camera_scale = lerp(ratio, 1., 1. / TILE_SIZE);
             let camera_bl = enter_room.position.to_f32().to_vector() * ratio;
             let from_camera_tr = point2(ROOM_SIZE.0, ROOM_SIZE.1).to_f32();
             let to_camera_tr = enter_room.position.to_f32() + vec2(1.0, 1.0);
@@ -515,10 +620,22 @@ impl Game {
                 self.vertex_buffer.write(&entity_vertices);
 
                 self.program
-                    .render_vertices(self.room_buffers.get(&self.current_room).as_ref().unwrap())
+                    .set_uniform(
+                        1,
+                        gl::Uniform::Texture(self.room_textures.get(&self.current_room).unwrap()),
+                    )
+                    .unwrap();
+                self.program
+                    .render_vertices(&self.room_vertex_buffer, gl::RenderTarget::Screen)
                     .unwrap();
 
-                self.program.render_vertices(&self.vertex_buffer).unwrap();
+                self.program
+                    .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
+                    .unwrap();
+
+                self.program
+                    .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
+                    .unwrap();
 
                 let alpha = ((ratio - 0.5) / 0.5).max(0.0);
                 self.program
@@ -539,8 +656,17 @@ impl Game {
                         ]),
                     )
                     .unwrap();
+
                 self.program
-                    .render_vertices(self.room_buffers.get(&enter_room.color).as_ref().unwrap())
+                    .set_uniform(
+                        1,
+                        gl::Uniform::Texture(
+                            self.room_textures.get(&enter_room.color).as_ref().unwrap(),
+                        ),
+                    )
+                    .unwrap();
+                self.program
+                    .render_vertices(&self.room_vertex_buffer, gl::RenderTarget::Screen)
                     .unwrap();
             }
         } else {
@@ -562,21 +688,35 @@ impl Game {
                 .unwrap();
 
             self.player.sprite.set_transform(
-                Transform2D::translation(-7.5, -7.5).then_scale(1. / TILE_SIZE, 1. / TILE_SIZE),
+                Transform2D::translation(-7.5, -7.5)
+                    .then_scale(1. / TILE_SIZE * player_x_flip, 1. / TILE_SIZE),
             );
             render_sprite(
                 &self.player.sprite,
-                0,
+                player_frame,
                 self.player.position,
                 &mut entity_vertices,
             );
 
             unsafe {
                 self.vertex_buffer.write(&entity_vertices);
-                self.program.render_vertices(&self.vertex_buffer).unwrap();
+                self.program
+                    .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
+                    .unwrap();
+                self.program
+                    .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
+                    .unwrap();
 
                 self.program
-                    .render_vertices(self.room_buffers.get(&self.current_room).as_ref().unwrap())
+                    .set_uniform(
+                        1,
+                        gl::Uniform::Texture(
+                            self.room_textures.get(&self.current_room).as_ref().unwrap(),
+                        ),
+                    )
+                    .unwrap();
+                self.program
+                    .render_vertices(&self.room_vertex_buffer, gl::RenderTarget::Screen)
                     .unwrap();
             }
         }
@@ -588,24 +728,28 @@ struct TileImages {
     tl_outer_corner: TextureRect,
     tl_horz: TextureRect,
     tl_vert: TextureRect,
+    tl_inner_corner: TextureRect,
     tl_solid: TextureRect,
 
     // top right
     tr_outer_corner: TextureRect,
     tr_horz: TextureRect,
     tr_vert: TextureRect,
+    tr_inner_corner: TextureRect,
     tr_solid: TextureRect,
 
     // bottom left
     bl_outer_corner: TextureRect,
     bl_horz: TextureRect,
     bl_vert: TextureRect,
+    bl_inner_corner: TextureRect,
     bl_solid: TextureRect,
 
     // bottom right
     br_outer_corner: TextureRect,
     br_horz: TextureRect,
     br_vert: TextureRect,
+    br_inner_corner: TextureRect,
     br_solid: TextureRect,
 }
 
@@ -624,22 +768,26 @@ impl TileImages {
             tl_outer_corner: to_texture_rect(tl_rect),
             tl_horz: to_texture_rect(tl_rect.translate(vec2(15, 0))),
             tl_vert: to_texture_rect(tl_rect.translate(vec2(30, 0))),
-            tl_solid: to_texture_rect(tl_rect.translate(vec2(45, 0))),
+            tl_inner_corner: to_texture_rect(tl_rect.translate(vec2(45, 0))),
+            tl_solid: to_texture_rect(tl_rect.translate(vec2(60, 0))),
 
             tr_outer_corner: to_texture_rect(tr_rect),
             tr_horz: to_texture_rect(tr_rect.translate(vec2(15, 0))),
             tr_vert: to_texture_rect(tr_rect.translate(vec2(30, 0))),
-            tr_solid: to_texture_rect(tr_rect.translate(vec2(45, 0))),
+            tr_inner_corner: to_texture_rect(tr_rect.translate(vec2(45, 0))),
+            tr_solid: to_texture_rect(tr_rect.translate(vec2(60, 0))),
 
             bl_outer_corner: to_texture_rect(bl_rect),
             bl_horz: to_texture_rect(bl_rect.translate(vec2(15, 0))),
             bl_vert: to_texture_rect(bl_rect.translate(vec2(30, 0))),
-            bl_solid: to_texture_rect(bl_rect.translate(vec2(45, 0))),
+            bl_inner_corner: to_texture_rect(bl_rect.translate(vec2(45, 0))),
+            bl_solid: to_texture_rect(bl_rect.translate(vec2(60, 0))),
 
             br_outer_corner: to_texture_rect(br_rect),
             br_horz: to_texture_rect(br_rect.translate(vec2(15, 0))),
             br_vert: to_texture_rect(br_rect.translate(vec2(30, 0))),
-            br_solid: to_texture_rect(br_rect.translate(vec2(45, 0))),
+            br_inner_corner: to_texture_rect(br_rect.translate(vec2(45, 0))),
+            br_solid: to_texture_rect(br_rect.translate(vec2(60, 0))),
         }
     }
 }
@@ -677,11 +825,15 @@ fn build_room_vertex_buffer(
             _ => {}
         }
 
-        let (t, l, r, b) = (
-            get_tile(x, y + 1),
-            get_tile(x - 1, y),
-            get_tile(x + 1, y),
-            get_tile(x, y - 1),
+        let (tl, t, tr, l, r, bl, b, br) = (
+            get_tile(x - 1, y + 1) == Tile::Solid,
+            get_tile(x, y + 1) == Tile::Solid,
+            get_tile(x + 1, y + 1) == Tile::Solid,
+            get_tile(x - 1, y) == Tile::Solid,
+            get_tile(x + 1, y) == Tile::Solid,
+            get_tile(x - 1, y - 1) == Tile::Solid,
+            get_tile(x, y - 1) == Tile::Solid,
+            get_tile(x + 1, y - 1) == Tile::Solid,
         );
 
         let rect = Box2D::new(
@@ -692,11 +844,13 @@ fn build_room_vertex_buffer(
 
         // top left rect
         let tl_box = Box2D::new(point2(rect.min.x, mid.y), point2(mid.x, rect.max.y));
-        if l != Tile::Solid && t != Tile::Solid {
+        if !tl && t && l {
+            graphics::render_quad(tl_box, tile_images.tl_inner_corner, &mut vertices);
+        } else if !l && !t {
             graphics::render_quad(tl_box, tile_images.tl_outer_corner, &mut vertices);
-        } else if l == Tile::Solid && t != Tile::Solid {
+        } else if l && !t {
             graphics::render_quad(tl_box, tile_images.tl_horz, &mut vertices);
-        } else if l != Tile::Solid && t == Tile::Solid {
+        } else if !l && t {
             graphics::render_quad(tl_box, tile_images.tl_vert, &mut vertices);
         } else {
             graphics::render_quad(tl_box, tile_images.tl_solid, &mut vertices);
@@ -704,11 +858,13 @@ fn build_room_vertex_buffer(
 
         // top right rect
         let tr_box = Box2D::new(point2(mid.x, mid.y), rect.max);
-        if r != Tile::Solid && t != Tile::Solid {
+        if !tr && t && r {
+            graphics::render_quad(tr_box, tile_images.tr_inner_corner, &mut vertices);
+        } else if !r && !t {
             graphics::render_quad(tr_box, tile_images.tr_outer_corner, &mut vertices);
-        } else if r == Tile::Solid && t != Tile::Solid {
+        } else if r && !t {
             graphics::render_quad(tr_box, tile_images.tr_horz, &mut vertices);
-        } else if r != Tile::Solid && t == Tile::Solid {
+        } else if !r && t {
             graphics::render_quad(tr_box, tile_images.tr_vert, &mut vertices);
         } else {
             graphics::render_quad(tr_box, tile_images.tr_solid, &mut vertices);
@@ -716,11 +872,13 @@ fn build_room_vertex_buffer(
 
         // bottom left rect
         let bl_box = Box2D::new(rect.min, mid);
-        if l != Tile::Solid && b != Tile::Solid {
+        if !bl && b & l {
+            graphics::render_quad(bl_box, tile_images.bl_inner_corner, &mut vertices);
+        } else if !l && !b {
             graphics::render_quad(bl_box, tile_images.bl_outer_corner, &mut vertices);
-        } else if l == Tile::Solid && b != Tile::Solid {
+        } else if l && !b {
             graphics::render_quad(bl_box, tile_images.bl_horz, &mut vertices);
-        } else if l != Tile::Solid && b == Tile::Solid {
+        } else if !l && b {
             graphics::render_quad(bl_box, tile_images.bl_vert, &mut vertices);
         } else {
             graphics::render_quad(bl_box, tile_images.bl_solid, &mut vertices);
@@ -728,11 +886,13 @@ fn build_room_vertex_buffer(
 
         // bottom right rect
         let br_box = Box2D::new(point2(mid.x, rect.min.y), point2(rect.max.x, mid.y));
-        if r != Tile::Solid && b != Tile::Solid {
+        if !br && b & r {
+            graphics::render_quad(br_box, tile_images.br_inner_corner, &mut vertices);
+        } else if !r && !b {
             graphics::render_quad(br_box, tile_images.br_outer_corner, &mut vertices);
-        } else if r == Tile::Solid && b != Tile::Solid {
+        } else if r && !b {
             graphics::render_quad(br_box, tile_images.br_horz, &mut vertices);
-        } else if r != Tile::Solid && b == Tile::Solid {
+        } else if !r && b {
             graphics::render_quad(br_box, tile_images.br_vert, &mut vertices);
         } else {
             graphics::render_quad(br_box, tile_images.br_solid, &mut vertices);
@@ -846,6 +1006,8 @@ struct Controls {
     jump: bool,
 }
 
+const RUN_ANIMATION_TIME: f32 = 0.5;
+
 struct Player {
     position: Point2D<f32>,
     velocity: Vector2D<f32>,
@@ -853,6 +1015,8 @@ struct Player {
     since_on_ground: f32,
 
     sprite: Sprite,
+    flip: bool,
+    animation_timer: f32,
 
     collision_rect: Rect<f32>,
     interact_rect: Rect<f32>,
@@ -860,7 +1024,7 @@ struct Player {
 
 impl Player {
     pub fn new(texture: TextureRect, position: Point2D<f32>) -> Player {
-        let mut player_sprite = Sprite::new(texture, 1, point2(0., 0.));
+        let mut player_sprite = Sprite::new(texture, 9, point2(0., 0.));
         player_sprite.set_transform(
             Transform2D::translation(-7.5, -7.5).then_scale(1. / TILE_SIZE, 1. / TILE_SIZE),
         );
@@ -872,6 +1036,8 @@ impl Player {
             since_on_ground: 9999.,
 
             sprite: player_sprite,
+            flip: false,
+            animation_timer: -1.,
 
             collision_rect: Rect::new(
                 point2(-3.0 / TILE_SIZE, -7.5 / TILE_SIZE),
@@ -921,7 +1087,7 @@ fn room_block_colors(color: RoomColor) -> RoomBlockColors {
     }
 }
 
-const ENTER_ROOM_TIME: f32 = 1.0;
+const ENTER_ROOM_TIME: f32 = 0.5;
 
 struct RoomTransitionIn {
     position: Point2D<i32>,
