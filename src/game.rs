@@ -2,9 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use euclid::{
     default::{Box2D, Point2D, Rect, Size2D, Transform2D, Vector2D},
-    point2, size2, vec2,
+    point2, size2, vec2, Angle,
 };
 use palette::{Hsv, LinSrgb};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 use crate::{
     constants::{MUSIC_VOLUME, SCREEN_SIZE, TICK_DT, TILE_SIZE, ZOOM_LEVEL},
@@ -39,6 +40,12 @@ pub struct Game {
 
     controls: Controls,
     player: Player,
+
+    dust_sprite: Sprite,
+    dust_spawn_timer: f32,
+    dust: Vec<Dust>,
+
+    rng: SmallRng,
 
     rooms: HashMap<RoomColor, Room>,
     room_textures: HashMap<RoomColor, gl::Texture>,
@@ -330,6 +337,19 @@ impl Game {
             size2(9., 11.) * ui_zoom,
         );
 
+        let dust_texture = unsafe {
+            load_image(
+                include_bytes!("../assets/dust.png"),
+                &mut atlas,
+                &mut atlas_texture,
+            )
+            .unwrap()
+        };
+        let mut dust_sprite = Sprite::new(dust_texture, 3, point2(2., 2.));
+        dust_sprite.set_transform(Transform2D::scale(1. / TILE_SIZE, 1. / TILE_SIZE));
+
+        let rng = SmallRng::seed_from_u64(0);
+
         Game {
             program,
             room_vertex_buffer,
@@ -354,6 +374,12 @@ impl Game {
 
             controls,
             player,
+
+            dust_sprite,
+            dust_spawn_timer: 0.,
+            dust: Vec::new(),
+
+            rng,
 
             rooms,
             room_textures,
@@ -397,6 +423,19 @@ impl Game {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        for i in (0..self.dust.len()).rev() {
+            let age = {
+                let dust = &mut self.dust[i];
+                dust.position += dust.velocity * TICK_DT;
+                dust.velocity *= 0.9;
+                dust.age += TICK_DT;
+                dust.age
+            };
+            if age >= DUST_LIFE_TIME {
+                self.dust.swap_remove(i);
             }
         }
 
@@ -476,17 +515,43 @@ impl Game {
 
         let on_ground = self.player.since_on_ground == 0.;
 
+        if self.player.velocity.x.abs() > 0. && on_ground {
+            self.dust_spawn_timer += TICK_DT;
+        }
         if x_dir.abs() > 0.0001 && self.player.velocity.x.abs() > 0. && on_ground {
             if self.run_handle.is_none() {
                 self.run_handle = Some(self.mixer.play(&self.run_sound, 1.0, true));
             }
         } else {
+            self.dust_spawn_timer = 0.;
             if let Some(handle) = self.run_handle.take() {
                 if on_ground {
                     self.mixer.play(&self.stop_sound, 0.5, false);
                 }
                 self.mixer.set_looping(&handle, false);
             }
+        }
+
+        let dust = &mut self.dust;
+        let player_position = self.player.position;
+        let player_rect = self
+            .player
+            .collision_rect
+            .translate(self.player.position.to_vector());
+        let rng = &mut self.rng;
+        let mut spawn_dust = move |speed: f32| {
+            let a = Angle::degrees(rng.gen_range(45., 135.));
+            let speed = rng.gen_range(0., speed);
+            let x_offset = rng.gen_range(-0.25, 0.25);
+            dust.push(Dust {
+                position: point2(player_position.x + x_offset, player_rect.min_y()),
+                velocity: Vector2D::from_angle_and_length(a, speed),
+                age: 0.0,
+            });
+        };
+        while self.dust_spawn_timer > DUST_SPAWN_TIME {
+            self.dust_spawn_timer -= DUST_SPAWN_TIME;
+            spawn_dust(1.);
         }
 
         if x_dir.abs() > 0. {
@@ -615,6 +680,9 @@ impl Game {
         }
 
         if !on_ground && self.player.since_on_ground == 0. {
+            for _ in 0..10 {
+                spawn_dust(2.);
+            }
             self.mixer.play(&self.land_sound, 1.0, false);
         }
 
@@ -707,6 +775,24 @@ impl Game {
         };
         let player_x_flip = if self.player.flip { -1. } else { 1. };
 
+        let mut dust_vertices = Vec::new();
+        for dust in &self.dust {
+            let frame = ((dust.age / DUST_LIFE_TIME) * 3.).floor() as usize;
+            let color = room_block_colors(self.current_room).border;
+            render_sprite(
+                &self.dust_sprite,
+                frame,
+                dust.position,
+                [
+                    color.0 as f32 / 255.,
+                    color.1 as f32 / 255.,
+                    color.2 as f32 / 255.,
+                    1.0,
+                ],
+                &mut dust_vertices,
+            );
+        }
+
         let mut entity_vertices = Vec::new();
 
         self.program
@@ -760,6 +846,7 @@ impl Game {
                 &self.player.sprite,
                 player_frame,
                 player_pos,
+                [1., 1., 1., 1.],
                 &mut entity_vertices,
             );
 
@@ -805,6 +892,11 @@ impl Game {
                     .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
                     .unwrap();
 
+                self.program
+                    .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
+                    .unwrap();
+
+                self.vertex_buffer.write(&dust_vertices);
                 self.program
                     .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
                     .unwrap();
@@ -867,6 +959,7 @@ impl Game {
                 &self.player.sprite,
                 player_frame,
                 self.player.position,
+                [1., 1., 1., 1.],
                 &mut entity_vertices,
             );
 
@@ -875,6 +968,11 @@ impl Game {
                 self.program
                     .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
                     .unwrap();
+                self.program
+                    .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
+                    .unwrap();
+
+                self.vertex_buffer.write(&dust_vertices);
                 self.program
                     .render_vertices(&self.vertex_buffer, gl::RenderTarget::Screen)
                     .unwrap();
@@ -893,32 +991,35 @@ impl Game {
             }
         }
 
-        let transform = Transform2D::scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
-            .then_scale(2., 2.)
-            .then_translate(vec2(-1.0, -1.0));
-        self.program
-            .set_uniform(
-                0,
-                gl::Uniform::Mat3([
-                    [transform.m11, transform.m12, 0.0],
-                    [transform.m21, transform.m22, 0.0],
-                    [transform.m31, transform.m32, 1.0],
-                ]),
-            )
-            .unwrap();
         let mut ui_vertices = Vec::new();
 
         render_sprite(
             &self.mute_icon,
             if self.muted { 0 } else { 1 },
             self.mute_icon_rect.min(),
+            [1., 1., 1., 1.],
             &mut ui_vertices,
         );
         unsafe {
-            self.ui_buffer.write(&ui_vertices);
             self.program
                 .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
                 .unwrap();
+
+            let transform =
+                Transform2D::scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
+                    .then_scale(2., 2.)
+                    .then_translate(vec2(-1.0, -1.0));
+            self.program
+                .set_uniform(
+                    0,
+                    gl::Uniform::Mat3([
+                        [transform.m11, transform.m12, 0.0],
+                        [transform.m21, transform.m22, 0.0],
+                        [transform.m31, transform.m32, 1.0],
+                    ]),
+                )
+                .unwrap();
+            self.ui_buffer.write(&ui_vertices);
             self.program
                 .render_vertices(&self.ui_buffer, gl::RenderTarget::Screen)
                 .unwrap();
@@ -1262,6 +1363,15 @@ impl Player {
             ),
         }
     }
+}
+
+const DUST_SPAWN_TIME: f32 = 0.025;
+const DUST_LIFE_TIME: f32 = 0.2;
+
+struct Dust {
+    position: Point2D<f32>,
+    velocity: Vector2D<f32>,
+    age: f32,
 }
 
 const ROOM_SIZE: (u32, u32) = (15, 15);

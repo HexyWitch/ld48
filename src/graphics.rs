@@ -94,7 +94,13 @@ pub unsafe fn load_raw_image(
     Ok(texture_coords)
 }
 
-pub fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out: &mut Vec<Vertex>) {
+pub fn render_sprite(
+    sprite: &Sprite,
+    frame: usize,
+    position: Point2D<f32>,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
     let size = size2(
         (sprite.frames[frame][2] - sprite.frames[frame][0]) as f32,
         (sprite.frames[frame][3] - sprite.frames[frame][1]) as f32,
@@ -120,32 +126,32 @@ pub fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out:
         Vertex {
             position: transform(vertex_rect.min()),
             uv: [uv_rect.min_x(), uv_rect.max_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
         Vertex {
             position: transform(point2(vertex_rect.max_x(), vertex_rect.min_y())),
             uv: [uv_rect.max_x(), uv_rect.max_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
         Vertex {
             position: transform(point2(vertex_rect.min_x(), vertex_rect.max_y())),
             uv: [uv_rect.min_x(), uv_rect.min_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
         Vertex {
             position: transform(point2(vertex_rect.max_x(), vertex_rect.min_y())),
             uv: [uv_rect.max_x(), uv_rect.max_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
         Vertex {
             position: transform(vertex_rect.max()),
             uv: [uv_rect.max_x(), uv_rect.min_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
         Vertex {
             position: transform(point2(vertex_rect.min_x(), vertex_rect.max_y())),
             uv: [uv_rect.min_x(), uv_rect.min_y()],
-            color: [1., 1., 1., 1.],
+            color,
         },
     ]);
 }
