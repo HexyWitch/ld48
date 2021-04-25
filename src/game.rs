@@ -364,11 +364,10 @@ impl Game {
     }
 
     pub fn update(&mut self, inputs: &[InputEvent]) {
-        self.controls.jump = false;
         for input in inputs {
             match input {
                 InputEvent::KeyDown(Key::W) | InputEvent::KeyDown(Key::Space) => {
-                    self.controls.jump = true;
+                    self.controls.since_jump = 0.0;
                 }
                 InputEvent::KeyDown(Key::A) => {
                     self.controls.left = true;
@@ -446,6 +445,7 @@ impl Game {
 
         // Player controls
         let coyote_time = 0.1;
+        let jump_buffer_time = 0.05;
         let ground_friction = 15.;
         let ground_acc = 100.;
         let air_acc = 25.;
@@ -504,17 +504,21 @@ impl Game {
         self.player.velocity.x = self.player.velocity.x.min(run_speed).max(-run_speed);
         self.player.velocity.y = self.player.velocity.y.min(fall_speed).max(-fall_speed);
 
-        if self.controls.jump && self.player.since_on_ground < coyote_time {
+        let jumped = self.controls.since_jump < jump_buffer_time;
+        if jumped && self.player.since_on_ground < coyote_time {
             self.mixer.play(&self.jump_sound, 1.0, false);
 
             self.player.velocity.y = jump_speed;
+            self.controls.since_jump = jump_buffer_time;
             self.player.since_on_ground = coyote_time;
         }
 
         self.player.velocity += vec2(0., gravity) * TICK_DT;
 
-        // Player collision
         self.player.since_on_ground += TICK_DT;
+        self.controls.since_jump += TICK_DT;
+
+        // Player collision
         let mut colliding;
 
         let mut corrections: Vec<Vector2D<f32>> = Vec::new();
@@ -1212,7 +1216,7 @@ fn create_room_block(room: &Room, color: RoomColor) -> Vec<u8> {
 struct Controls {
     left: bool,
     right: bool,
-    jump: bool,
+    since_jump: f32,
 }
 
 const RUN_ANIMATION_TIME: f32 = 0.5;

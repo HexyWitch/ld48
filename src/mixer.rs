@@ -52,10 +52,6 @@ impl Mixer {
         AudioInstanceHandle(id)
     }
 
-    pub fn stop(&self, handle: &AudioInstanceHandle) {
-        self.playing.lock().unwrap().remove(&handle.0);
-    }
-
     pub fn set_volume(&self, handle: &AudioInstanceHandle, volume: f32) {
         let mut instances = self.playing.lock().unwrap();
         if let Some(instance) = instances.get_mut(&handle.0) {

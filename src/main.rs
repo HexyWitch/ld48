@@ -10,16 +10,9 @@ mod texture_atlas;
 
 use std::sync::Arc;
 
-use euclid::{
-    default::{Transform2D, Vector2D},
-    point2, vec2,
-};
-
 use constants::{SCREEN_SIZE, TICK_DT};
 use game::Game;
-use graphics::{load_image, render_sprite, Sprite, Vertex, TEXTURE_ATLAS_SIZE};
-use input::{InputEvent, Key};
-use mixer::Mixer;
+use input::InputEvent;
 
 fn main() {
     platform::run(

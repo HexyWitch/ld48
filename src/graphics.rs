@@ -55,11 +55,6 @@ impl Sprite {
     pub fn transform(&self) -> &Transform2D<f32> {
         &self.transform
     }
-
-    pub fn size(&self) -> Size2D<u32> {
-        let tex = &self.frames[0];
-        size2(tex[2] - tex[0], tex[3] - tex[1])
-    }
 }
 
 pub unsafe fn load_image(

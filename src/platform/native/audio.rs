@@ -12,10 +12,6 @@ pub fn start_audio_playback<F: FnMut(&mut [i16]) + 'static + Send>(mut f: F) {
             .default_output_device()
             .expect("no output device available");
 
-        let formats: Vec<cpal::SupportedFormat> = device
-            .supported_output_formats()
-            .unwrap()
-            .collect::<Vec<_>>();
         let output_format = device
             .supported_output_formats()
             .unwrap()
