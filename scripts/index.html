@@ -4,10 +4,21 @@
     <meta charset="utf-8" />
     <script src='./ld48.js'></script>
     <script>
+        var clicked = false;
         window.addEventListener("load", () => {
-            wasm_bindgen('./ld48_bg.wasm').catch(console.error);
+            var el = document.getElementById("start");
+            el.onclick = function () {
+                el.remove();
+                wasm_bindgen('./ld48_bg.wasm').catch(console.error);
+                return false;
+            };
         })
     </script>
 </head>
+
+<body>
+    <a href="#" id="start"><img src="play.png"></a>
+</body>
+</body>
 
 </html>

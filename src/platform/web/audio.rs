@@ -1,38 +1,49 @@
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    Sample,
+};
 use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::AudioProcessingEvent;
 
 pub fn start_audio_playback<F: FnMut(&mut [i16]) + 'static + Send>(mut f: F) {
-    let audio_context = web_sys::AudioContext::new().unwrap();
-    let script_processor_node = audio_context.create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(4096, 0, 2).unwrap();
+    let host = cpal::default_host();
 
-    let mut int_buffer = Vec::new();
-    let mut float_buffer_left = Vec::new();
-    let mut float_buffer_right = Vec::new();
-    let on_audio_process = Closure::wrap(Box::new(move |event: AudioProcessingEvent| {
-        let audio_buffer = event.output_buffer().unwrap();
-        let len = audio_buffer.length() as usize;
-        int_buffer.resize(len * 2, 0);
-        f(&mut int_buffer);
-        for (i, s) in int_buffer.drain(0..).enumerate() {
-            if i % 2 == 0 {
-                float_buffer_left.push(s as f32 / 32768.);
-            } else {
-                float_buffer_right.push(s as f32 / 32768.);
-            }
+    let device = host
+        .default_output_device()
+        .expect("no output device available");
+
+    let supported_output_config = device
+        .supported_output_configs()
+        .unwrap()
+        .next()
+        .unwrap()
+        .with_max_sample_rate();
+
+    match supported_output_config.sample_format() {
+        cpal::SampleFormat::F32 => {}
+        _ => {
+            panic!("Output format not supported");
         }
-        audio_buffer
-            .copy_to_channel(&mut float_buffer_left, 0)
-            .unwrap();
-        audio_buffer
-            .copy_to_channel(&mut float_buffer_right, 1)
-            .unwrap();
-        float_buffer_left.clear();
-        float_buffer_right.clear();
-    }) as Box<dyn FnMut(AudioProcessingEvent)>);
+    }
 
-    script_processor_node
-        .connect_with_audio_node(&audio_context.destination())
+    let output_config = supported_output_config.config();
+
+    let mut intermediate_buffer = Vec::new();
+
+    let stream = device
+        .build_output_stream(
+            &output_config,
+            move |data, _| {
+                intermediate_buffer.clear();
+                intermediate_buffer.resize(data.len(), 0);
+                f(&mut intermediate_buffer);
+                for (i, sample) in intermediate_buffer.drain(0..).enumerate() {
+                    data[i] = sample.to_f32();
+                }
+            },
+            |e| panic!("{}", e),
+        )
         .unwrap();
-    script_processor_node.set_onaudioprocess(Some(on_audio_process.as_ref().unchecked_ref()));
-    on_audio_process.forget();
+    stream.play().unwrap();
+    std::mem::forget(stream);
 }
