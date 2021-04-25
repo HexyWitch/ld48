@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Error;
 use euclid::{
     default::{Box2D, Point2D, Rect, Size2D, Transform2D, Vector2D},
     point2, size2, vec2,
 };
+use palette::{Hsv, LinSrgb};
 
 use crate::{
     constants::{MUSIC_VOLUME, SCREEN_SIZE, TICK_DT, TILE_SIZE, ZOOM_LEVEL},
@@ -42,7 +42,6 @@ pub struct Game {
 
     rooms: HashMap<RoomColor, Room>,
     room_textures: HashMap<RoomColor, gl::Texture>,
-    room_blocks: HashMap<RoomColor, TextureRect>,
 
     current_room: RoomColor,
     enter_room: Option<RoomTransitionIn>,
@@ -178,12 +177,48 @@ impl Game {
 
         let room_list = vec![
             (
-                RoomColor::Blue,
-                parse_room(include_str!("../assets/rooms/blue.rum")),
+                RoomColor::Red,
+                parse_room(include_str!("../assets/rooms/red.rum")),
+            ),
+            (
+                RoomColor::Orange,
+                parse_room(include_str!("../assets/rooms/orange.rum")),
+            ),
+            (
+                RoomColor::Yellow,
+                parse_room(include_str!("../assets/rooms/yellow.rum")),
             ),
             (
                 RoomColor::Green,
                 parse_room(include_str!("../assets/rooms/green.rum")),
+            ),
+            (
+                RoomColor::Turquoise,
+                parse_room(include_str!("../assets/rooms/turquoise.rum")),
+            ),
+            (
+                RoomColor::Aqua,
+                parse_room(include_str!("../assets/rooms/aqua.rum")),
+            ),
+            (
+                RoomColor::Chetwood,
+                parse_room(include_str!("../assets/rooms/chetwood.rum")),
+            ),
+            (
+                RoomColor::Blue,
+                parse_room(include_str!("../assets/rooms/blue.rum")),
+            ),
+            (
+                RoomColor::Purple,
+                parse_room(include_str!("../assets/rooms/purple.rum")),
+            ),
+            (
+                RoomColor::Magenta,
+                parse_room(include_str!("../assets/rooms/magenta.rum")),
+            ),
+            (
+                RoomColor::Ferrish,
+                parse_room(include_str!("../assets/rooms/ferrish.rum")),
             ),
         ];
 
@@ -322,7 +357,6 @@ impl Game {
 
             rooms,
             room_textures,
-            room_blocks,
 
             current_room: RoomColor::Blue,
             enter_room: None,
@@ -727,7 +761,6 @@ impl Game {
 
             let room_position = enter_room.position.to_f32().to_vector();
 
-            let camera_scale = lerp(ratio, 1., 1. / TILE_SIZE);
             let camera_bl = enter_room.position.to_f32().to_vector() * ratio;
             let from_camera_tr = point2(ROOM_SIZE.0, ROOM_SIZE.1).to_f32();
             let to_camera_tr = enter_room.position.to_f32() + vec2(1.0, 1.0);
@@ -1240,8 +1273,35 @@ enum Tile {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum RoomColor {
-    Blue,
+    Red,
+    Orange,
+    Yellow,
     Green,
+    Turquoise,
+    Aqua,
+    Chetwood,
+    Blue,
+    Purple,
+    Magenta,
+    Ferrish,
+}
+
+impl RoomColor {
+    fn hue(&self) -> f32 {
+        match self {
+            RoomColor::Red => 0.,
+            RoomColor::Orange => 26.,
+            RoomColor::Yellow => 57.,
+            RoomColor::Green => 129.,
+            RoomColor::Turquoise => 155.,
+            RoomColor::Aqua => 166.,
+            RoomColor::Chetwood => 199.,
+            RoomColor::Blue => 225.,
+            RoomColor::Purple => 255.,
+            RoomColor::Magenta => 300.,
+            RoomColor::Ferrish => 335.,
+        }
+    }
 }
 
 const ROOM_BLOCK_IMAGE_SIZE: (u32, u32) = (17, 17);
@@ -1253,21 +1313,35 @@ struct RoomBlockColors {
     outer_border: (u8, u8, u8),
 }
 
-fn room_block_colors(color: RoomColor) -> RoomBlockColors {
-    match color {
-        RoomColor::Blue => RoomBlockColors {
-            background: (161, 159, 194),
-            inner: (98, 103, 153),
-            border: (77, 81, 122),
-            outer_border: (44, 46, 77),
-        },
-        RoomColor::Green => RoomBlockColors {
-            background: (152, 171, 164),
-            inner: (99, 153, 135),
-            border: (77, 120, 105),
-            outer_border: (44, 77, 66),
-        },
+impl RoomBlockColors {
+    pub fn new(hue: f32) -> RoomBlockColors {
+        RoomBlockColors {
+            background: LinSrgb::from(Hsv::<palette::encoding::srgb::Srgb, f32>::from_components(
+                (hue, 0.21, 0.7),
+            ))
+            .into_format()
+            .into_components(),
+            inner: LinSrgb::from(Hsv::<palette::encoding::srgb::Srgb, f32>::from_components(
+                (hue, 0.35, 0.6),
+            ))
+            .into_format()
+            .into_components(),
+            border: LinSrgb::from(Hsv::<palette::encoding::srgb::Srgb, f32>::from_components(
+                (hue, 0.36, 0.47),
+            ))
+            .into_format()
+            .into_components(),
+            outer_border: LinSrgb::from(
+                Hsv::<palette::encoding::srgb::Srgb, f32>::from_components((hue, 0.42, 0.3)),
+            )
+            .into_format()
+            .into_components(),
+        }
     }
+}
+
+fn room_block_colors(color: RoomColor) -> RoomBlockColors {
+    RoomBlockColors::new(color.hue())
 }
 
 const ENTER_ROOM_TIME: f32 = 0.5;
@@ -1335,15 +1409,31 @@ fn parse_room(level: &str) -> Room {
     let mut right_entrance = None;
 
     for (y, line) in level.lines().enumerate() {
+        if y >= ROOM_SIZE.1 as usize {
+            break;
+        }
         for (x, c) in line.chars().enumerate() {
+            if x >= ROOM_SIZE.0 as usize {
+                break;
+            }
+
             // flip y
             let y = ROOM_SIZE.1 as usize - 1 - y;
             let cell = y * ROOM_SIZE.0 as usize + x;
             let tile = match c {
                 ' ' => Tile::Empty,
                 '#' => Tile::Solid,
-                'B' => Tile::Room(RoomColor::Blue),
+                'R' => Tile::Room(RoomColor::Red),
+                'O' => Tile::Room(RoomColor::Orange),
+                'Y' => Tile::Room(RoomColor::Yellow),
                 'G' => Tile::Room(RoomColor::Green),
+                'T' => Tile::Room(RoomColor::Turquoise),
+                'A' => Tile::Room(RoomColor::Aqua),
+                'C' => Tile::Room(RoomColor::Chetwood),
+                'B' => Tile::Room(RoomColor::Blue),
+                'P' => Tile::Room(RoomColor::Purple),
+                'M' => Tile::Room(RoomColor::Magenta),
+                'F' => Tile::Room(RoomColor::Ferrish),
                 c @ _ => {
                     panic!("Unrecognized tile identifier '{}'", c);
                 }
