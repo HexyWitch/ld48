@@ -7,11 +7,11 @@ use euclid::{
 };
 
 use crate::{
-    constants::{SCREEN_SIZE, TICK_DT, TILE_SIZE, ZOOM_LEVEL},
+    constants::{MUSIC_VOLUME, SCREEN_SIZE, TICK_DT, TILE_SIZE, ZOOM_LEVEL},
     gl, graphics,
     graphics::{load_image, load_raw_image, render_sprite, Sprite, Vertex, TEXTURE_ATLAS_SIZE},
-    input::{InputEvent, Key},
-    mixer::Mixer,
+    input::{InputEvent, Key, MouseButton},
+    mixer::{Audio, AudioInstanceHandle, Mixer},
     texture_atlas::{TextureAtlas, TextureRect},
 };
 
@@ -19,9 +19,23 @@ pub struct Game {
     program: gl::Program,
     room_vertex_buffer: gl::VertexBuffer,
     vertex_buffer: gl::VertexBuffer,
+    ui_buffer: gl::VertexBuffer,
     atlas_texture: gl::Texture,
 
     mixer: Arc<Mixer>,
+    run_sound: Audio,
+    run_handle: Option<AudioInstanceHandle>,
+    jump_sound: Audio,
+    land_sound: Audio,
+    stop_sound: Audio,
+    enter_sound: Audio,
+
+    music_handle: AudioInstanceHandle,
+
+    mouse_pos: Point2D<f32>,
+    muted: bool,
+    mute_icon_rect: Rect<f32>,
+    mute_icon: Sprite,
 
     controls: Controls,
     player: Player,
@@ -84,6 +98,12 @@ impl Game {
                                 size: 2,
                                 offset: 2 * 4,
                             },
+                            gl::VertexAttribute {
+                                name: "a_color",
+                                ty: gl::VertexAttributeType::Float,
+                                size: 4,
+                                offset: 4 * 4,
+                            },
                         ],
                     },
                 })
@@ -102,32 +122,39 @@ impl Game {
         let mut atlas = TextureAtlas::new((TEXTURE_ATLAS_SIZE.width, TEXTURE_ATLAS_SIZE.height));
 
         let vertex_buffer = unsafe { gl_context.create_vertex_buffer().unwrap() };
+        let ui_buffer = unsafe { gl_context.create_vertex_buffer().unwrap() };
 
         let mut room_vertex_buffer = unsafe { gl_context.create_vertex_buffer().unwrap() };
         let room_vertices = vec![
             Vertex {
                 position: [0.0, 0.0],
                 uv: [0.0, 0.0],
+                color: [1., 1., 1., 1.],
             },
             Vertex {
                 position: [ROOM_SIZE.0 as f32, 0.0],
                 uv: [1.0, 0.0],
+                color: [1., 1., 1., 1.],
             },
             Vertex {
                 position: [0.0, ROOM_SIZE.1 as f32],
                 uv: [0.0, 1.0],
+                color: [1., 1., 1., 1.],
             },
             Vertex {
                 position: [ROOM_SIZE.0 as f32, 0.0],
                 uv: [1.0, 0.0],
+                color: [1., 1., 1., 1.],
             },
             Vertex {
                 position: [ROOM_SIZE.0 as f32, ROOM_SIZE.1 as f32],
                 uv: [1.0, 1.0],
+                color: [1., 1., 1., 1.],
             },
             Vertex {
                 position: [0.0, ROOM_SIZE.1 as f32],
                 uv: [0.0, 1.0],
+                color: [1., 1., 1., 1.],
             },
         ];
         unsafe { room_vertex_buffer.write(&room_vertices) };
@@ -149,66 +176,77 @@ impl Game {
         let mut room_textures = HashMap::new();
         let mut room_blocks = HashMap::new();
 
-        let blue_room = parse_room(include_str!("../assets/rooms/blue.rum"));
+        let room_list = vec![
+            (
+                RoomColor::Blue,
+                parse_room(include_str!("../assets/rooms/blue.rum")),
+            ),
+            (
+                RoomColor::Green,
+                parse_room(include_str!("../assets/rooms/green.rum")),
+            ),
+        ];
 
-        let blue_room_block_image = create_room_block(&blue_room, RoomColor::Blue);
-        let blue_room_block_texture = unsafe {
-            load_raw_image(
-                &blue_room_block_image,
-                ROOM_BLOCK_IMAGE_SIZE.0,
-                ROOM_BLOCK_IMAGE_SIZE.1,
-                &mut atlas,
-                &mut atlas_texture,
-            )
-            .unwrap()
-        };
-        room_blocks.insert(RoomColor::Blue, blue_room_block_texture);
-
-        let blue_room_buffer =
-            build_room_vertex_buffer(gl_context, &room_blocks, &blue_room, &tile_images);
-        let room_pixel_size = Size2D::new(ROOM_SIZE.0, ROOM_SIZE.1).to_f32() * TILE_SIZE;
-        let transform = Transform2D::scale(
-            1.0 / room_pixel_size.width as f32,
-            1.0 / room_pixel_size.height as f32,
-        )
-        .then_scale(TILE_SIZE as f32, TILE_SIZE as f32)
-        .then_scale(2., 2.)
-        .then_translate(vec2(-1.0, -1.0));
-        program
-            .set_uniform(
-                0,
-                gl::Uniform::Mat3([
-                    [transform.m11, transform.m12, 0.0],
-                    [transform.m21, transform.m22, 0.0],
-                    [transform.m31, transform.m32, 1.0],
-                ]),
-            )
-            .unwrap();
-        program
-            .set_uniform(1, gl::Uniform::Texture(&atlas_texture))
-            .unwrap();
-        program.set_uniform(2, gl::Uniform::Float(1.0)).unwrap();
-
-        unsafe {
-            let room_texture = gl_context
-                .create_texture(
-                    gl::TextureFormat::RGBAFloat,
-                    room_pixel_size.width as u32,
-                    room_pixel_size.height as u32,
+        // first create  room blocks
+        for (color, room) in &room_list {
+            let room_block_image = create_room_block(&room, *color);
+            let room_block_texture = unsafe {
+                load_raw_image(
+                    &room_block_image,
+                    ROOM_BLOCK_IMAGE_SIZE.0,
+                    ROOM_BLOCK_IMAGE_SIZE.1,
+                    &mut atlas,
+                    &mut atlas_texture,
                 )
-                .unwrap();
-            let room_render_target = gl_context.create_texture_render_target(&room_texture);
-
-            program
-                .render_vertices(
-                    &blue_room_buffer,
-                    gl::RenderTarget::Texture(&room_render_target),
-                )
-                .unwrap();
-            room_textures.insert(RoomColor::Blue, room_texture);
+                .unwrap()
+            };
+            room_blocks.insert(*color, room_block_texture);
         }
 
-        rooms.insert(RoomColor::Blue, blue_room);
+        for (color, room) in room_list {
+            let room_buffer =
+                build_room_vertex_buffer(gl_context, &room_blocks, color, &room, &tile_images);
+            let room_pixel_size = Size2D::new(ROOM_SIZE.0, ROOM_SIZE.1).to_f32() * TILE_SIZE;
+            let transform = Transform2D::scale(
+                1.0 / room_pixel_size.width as f32,
+                1.0 / room_pixel_size.height as f32,
+            )
+            .then_scale(TILE_SIZE as f32, TILE_SIZE as f32)
+            .then_scale(2., 2.)
+            .then_translate(vec2(-1.0, -1.0));
+            program
+                .set_uniform(
+                    0,
+                    gl::Uniform::Mat3([
+                        [transform.m11, transform.m12, 0.0],
+                        [transform.m21, transform.m22, 0.0],
+                        [transform.m31, transform.m32, 1.0],
+                    ]),
+                )
+                .unwrap();
+            program
+                .set_uniform(1, gl::Uniform::Texture(&atlas_texture))
+                .unwrap();
+            program.set_uniform(2, gl::Uniform::Float(1.0)).unwrap();
+
+            unsafe {
+                let room_texture = gl_context
+                    .create_texture(
+                        gl::TextureFormat::RGBAFloat,
+                        room_pixel_size.width as u32,
+                        room_pixel_size.height as u32,
+                    )
+                    .unwrap();
+                let room_render_target = gl_context.create_texture_render_target(&room_texture);
+
+                program
+                    .render_vertices(&room_buffer, gl::RenderTarget::Texture(&room_render_target))
+                    .unwrap();
+                room_textures.insert(color, room_texture);
+            }
+
+            rooms.insert(color, room);
+        }
 
         let player_rect = unsafe {
             load_image(
@@ -221,14 +259,63 @@ impl Game {
 
         let player = Player::new(player_rect, point2(2., 2.));
 
+        let run_sound = mixer.load_ogg(include_bytes!("../assets/run.ogg")).unwrap();
+        let jump_sound = mixer
+            .load_ogg(include_bytes!("../assets/jump.ogg"))
+            .unwrap();
+        let land_sound = mixer
+            .load_ogg(include_bytes!("../assets/land.ogg"))
+            .unwrap();
+        let stop_sound = mixer
+            .load_ogg(include_bytes!("../assets/stop.ogg"))
+            .unwrap();
+        let enter_sound = mixer
+            .load_ogg(include_bytes!("../assets/enter.ogg"))
+            .unwrap();
+        let music_sound = mixer
+            .load_ogg(include_bytes!("../assets/music.ogg"))
+            .unwrap();
+
+        let music_handle = mixer.play(&music_sound, MUSIC_VOLUME, true);
+
+        let mute_texture = unsafe {
+            load_image(
+                include_bytes!("../assets/music_icon.png"),
+                &mut atlas,
+                &mut atlas_texture,
+            )
+            .unwrap()
+        };
+
+        let ui_zoom = 2.;
+        let mut mute_icon = Sprite::new(mute_texture, 2, point2(0.0, 0.0));
+        mute_icon.set_transform(Transform2D::scale(ui_zoom, ui_zoom));
+        let mute_icon_rect = Rect::new(
+            point2(8., SCREEN_SIZE.1 as f32 - 8. - 11. * ui_zoom),
+            size2(9., 11.) * ui_zoom,
+        );
+
         Game {
             program,
             room_vertex_buffer,
             vertex_buffer,
-
+            ui_buffer,
             atlas_texture,
 
             mixer,
+            run_sound,
+            run_handle: None,
+            jump_sound,
+            land_sound,
+            stop_sound,
+            enter_sound,
+
+            music_handle,
+
+            mouse_pos: Point2D::zero(),
+            muted: false,
+            mute_icon_rect,
+            mute_icon,
 
             controls,
             player,
@@ -260,6 +347,21 @@ impl Game {
                 }
                 InputEvent::KeyUp(Key::D) => {
                     self.controls.right = false;
+                }
+                InputEvent::MouseMove(position) => {
+                    self.mouse_pos = point2(position.x, SCREEN_SIZE.1 as f32 - position.y);
+                }
+                InputEvent::MouseDown(button) => {
+                    if let MouseButton::Left = button {
+                        if self.mute_icon_rect.contains(self.mouse_pos) {
+                            self.muted = !self.muted;
+                            if self.muted {
+                                self.mixer.set_volume(&self.music_handle, 0.);
+                            } else {
+                                self.mixer.set_volume(&self.music_handle, MUSIC_VOLUME)
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -331,6 +433,7 @@ impl Game {
                 self.player.animation_timer = 0.;
             }
             self.player.flip = x_dir < 0.;
+
             self.player.animation_timer =
                 (self.player.animation_timer + TICK_DT) % RUN_ANIMATION_TIME;
         } else {
@@ -338,6 +441,20 @@ impl Game {
         }
 
         let on_ground = self.player.since_on_ground == 0.;
+
+        if x_dir.abs() > 0.0001 && self.player.velocity.x.abs() > 0. && on_ground {
+            if self.run_handle.is_none() {
+                self.run_handle = Some(self.mixer.play(&self.run_sound, 1.0, true));
+            }
+        } else {
+            if let Some(handle) = self.run_handle.take() {
+                if on_ground {
+                    self.mixer.play(&self.stop_sound, 0.5, false);
+                }
+                self.mixer.set_looping(&handle, false);
+            }
+        }
+
         if x_dir.abs() > 0. {
             if on_ground {
                 if x_dir * self.player.velocity.x < 0. {
@@ -354,6 +471,8 @@ impl Game {
         self.player.velocity.y = self.player.velocity.y.min(fall_speed).max(-fall_speed);
 
         if self.controls.jump && self.player.since_on_ground < coyote_time {
+            self.mixer.play(&self.jump_sound, 1.0, false);
+
             self.player.velocity.y = jump_speed;
             self.player.since_on_ground = coyote_time;
         }
@@ -457,6 +576,10 @@ impl Game {
             }
         }
 
+        if !on_ground && self.player.since_on_ground == 0. {
+            self.mixer.play(&self.land_sound, 1.0, false);
+        }
+
         self.player.position = new_pos;
 
         // Player block interaction
@@ -468,7 +591,8 @@ impl Game {
         let enter_room = &mut self.enter_room;
         let player_position = self.player.position;
         let rooms = &self.rooms;
-        room.for_each_tile_in_rect(player_interact_rect, move |pos, tile| {
+        let mut entered = false;
+        room.for_each_tile_in_rect(player_interact_rect, |pos, tile| {
             if let Tile::Room(color) = tile {
                 let left_enter_region = Rect::new(pos.to_f32() + vec2(-1., 0.), size2(1., 1.));
                 if left_enter_region.contains(player_position) {
@@ -496,7 +620,7 @@ impl Game {
 
                 let right_enter_region = Rect::new(pos.to_f32() + vec2(1., 0.), size2(1., 1.));
                 if right_enter_region.contains(player_position) {
-                    if rooms.get(&color).unwrap().left_entrance.is_some() {
+                    if rooms.get(&color).unwrap().right_entrance.is_some() {
                         *enter_room = Some(RoomTransitionIn {
                             position: pos,
                             entrance: RoomEntrance::Right,
@@ -505,8 +629,19 @@ impl Game {
                         });
                     }
                 }
+
+                if enter_room.is_some() {
+                    entered = true;
+                }
             }
         });
+
+        if entered {
+            self.mixer.play(&self.enter_sound, 1.0, false);
+            if let Some(handle) = self.run_handle.take() {
+                self.mixer.set_looping(&handle, false)
+            }
+        }
     }
 
     pub fn draw(&mut self, context: &mut gl::Context) {
@@ -720,6 +855,37 @@ impl Game {
                     .unwrap();
             }
         }
+
+        let transform = Transform2D::scale(1.0 / SCREEN_SIZE.0 as f32, 1.0 / SCREEN_SIZE.0 as f32)
+            .then_scale(2., 2.)
+            .then_translate(vec2(-1.0, -1.0));
+        self.program
+            .set_uniform(
+                0,
+                gl::Uniform::Mat3([
+                    [transform.m11, transform.m12, 0.0],
+                    [transform.m21, transform.m22, 0.0],
+                    [transform.m31, transform.m32, 1.0],
+                ]),
+            )
+            .unwrap();
+        let mut ui_vertices = Vec::new();
+
+        render_sprite(
+            &self.mute_icon,
+            if self.muted { 0 } else { 1 },
+            self.mute_icon_rect.min(),
+            &mut ui_vertices,
+        );
+        unsafe {
+            self.ui_buffer.write(&ui_vertices);
+            self.program
+                .set_uniform(1, gl::Uniform::Texture(&self.atlas_texture))
+                .unwrap();
+            self.program
+                .render_vertices(&self.ui_buffer, gl::RenderTarget::Screen)
+                .unwrap();
+        }
     }
 }
 
@@ -795,6 +961,7 @@ impl TileImages {
 fn build_room_vertex_buffer(
     gl_context: &mut gl::Context,
     room_block_textures: &HashMap<RoomColor, TextureRect>,
+    room_color: RoomColor,
     room: &Room,
     tile_images: &TileImages,
 ) -> gl::VertexBuffer {
@@ -807,6 +974,14 @@ fn build_room_vertex_buffer(
             room.tiles[cell]
         }
     };
+
+    let colors = room_block_colors(room_color);
+    let v_color = [
+        colors.inner.0 as f32 / 255.,
+        colors.inner.1 as f32 / 255.,
+        colors.inner.2 as f32 / 255.,
+        1.0,
+    ];
 
     let mut room_blocks = Vec::new();
     for (cell, tile) in room.tiles.iter().enumerate() {
@@ -845,57 +1020,57 @@ fn build_room_vertex_buffer(
         // top left rect
         let tl_box = Box2D::new(point2(rect.min.x, mid.y), point2(mid.x, rect.max.y));
         if !tl && t && l {
-            graphics::render_quad(tl_box, tile_images.tl_inner_corner, &mut vertices);
+            graphics::render_quad(tl_box, tile_images.tl_inner_corner, v_color, &mut vertices);
         } else if !l && !t {
-            graphics::render_quad(tl_box, tile_images.tl_outer_corner, &mut vertices);
+            graphics::render_quad(tl_box, tile_images.tl_outer_corner, v_color, &mut vertices);
         } else if l && !t {
-            graphics::render_quad(tl_box, tile_images.tl_horz, &mut vertices);
+            graphics::render_quad(tl_box, tile_images.tl_horz, v_color, &mut vertices);
         } else if !l && t {
-            graphics::render_quad(tl_box, tile_images.tl_vert, &mut vertices);
+            graphics::render_quad(tl_box, tile_images.tl_vert, v_color, &mut vertices);
         } else {
-            graphics::render_quad(tl_box, tile_images.tl_solid, &mut vertices);
+            graphics::render_quad(tl_box, tile_images.tl_solid, v_color, &mut vertices);
         }
 
         // top right rect
         let tr_box = Box2D::new(point2(mid.x, mid.y), rect.max);
         if !tr && t && r {
-            graphics::render_quad(tr_box, tile_images.tr_inner_corner, &mut vertices);
+            graphics::render_quad(tr_box, tile_images.tr_inner_corner, v_color, &mut vertices);
         } else if !r && !t {
-            graphics::render_quad(tr_box, tile_images.tr_outer_corner, &mut vertices);
+            graphics::render_quad(tr_box, tile_images.tr_outer_corner, v_color, &mut vertices);
         } else if r && !t {
-            graphics::render_quad(tr_box, tile_images.tr_horz, &mut vertices);
+            graphics::render_quad(tr_box, tile_images.tr_horz, v_color, &mut vertices);
         } else if !r && t {
-            graphics::render_quad(tr_box, tile_images.tr_vert, &mut vertices);
+            graphics::render_quad(tr_box, tile_images.tr_vert, v_color, &mut vertices);
         } else {
-            graphics::render_quad(tr_box, tile_images.tr_solid, &mut vertices);
+            graphics::render_quad(tr_box, tile_images.tr_solid, v_color, &mut vertices);
         }
 
         // bottom left rect
         let bl_box = Box2D::new(rect.min, mid);
         if !bl && b & l {
-            graphics::render_quad(bl_box, tile_images.bl_inner_corner, &mut vertices);
+            graphics::render_quad(bl_box, tile_images.bl_inner_corner, v_color, &mut vertices);
         } else if !l && !b {
-            graphics::render_quad(bl_box, tile_images.bl_outer_corner, &mut vertices);
+            graphics::render_quad(bl_box, tile_images.bl_outer_corner, v_color, &mut vertices);
         } else if l && !b {
-            graphics::render_quad(bl_box, tile_images.bl_horz, &mut vertices);
+            graphics::render_quad(bl_box, tile_images.bl_horz, v_color, &mut vertices);
         } else if !l && b {
-            graphics::render_quad(bl_box, tile_images.bl_vert, &mut vertices);
+            graphics::render_quad(bl_box, tile_images.bl_vert, v_color, &mut vertices);
         } else {
-            graphics::render_quad(bl_box, tile_images.bl_solid, &mut vertices);
+            graphics::render_quad(bl_box, tile_images.bl_solid, v_color, &mut vertices);
         }
 
         // bottom right rect
         let br_box = Box2D::new(point2(mid.x, rect.min.y), point2(rect.max.x, mid.y));
         if !br && b & r {
-            graphics::render_quad(br_box, tile_images.br_inner_corner, &mut vertices);
+            graphics::render_quad(br_box, tile_images.br_inner_corner, v_color, &mut vertices);
         } else if !r && !b {
-            graphics::render_quad(br_box, tile_images.br_outer_corner, &mut vertices);
+            graphics::render_quad(br_box, tile_images.br_outer_corner, v_color, &mut vertices);
         } else if r && !b {
-            graphics::render_quad(br_box, tile_images.br_horz, &mut vertices);
+            graphics::render_quad(br_box, tile_images.br_horz, v_color, &mut vertices);
         } else if !r && b {
-            graphics::render_quad(br_box, tile_images.br_vert, &mut vertices);
+            graphics::render_quad(br_box, tile_images.br_vert, v_color, &mut vertices);
         } else {
-            graphics::render_quad(br_box, tile_images.br_solid, &mut vertices);
+            graphics::render_quad(br_box, tile_images.br_solid, v_color, &mut vertices);
         }
     }
 
@@ -910,6 +1085,7 @@ fn build_room_vertex_buffer(
         graphics::render_quad(
             room_block_box,
             *room_block_textures.get(color).unwrap(),
+            [1., 1., 1., 1.],
             &mut vertices,
         );
     }
@@ -1065,6 +1241,7 @@ enum Tile {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum RoomColor {
     Blue,
+    Green,
 }
 
 const ROOM_BLOCK_IMAGE_SIZE: (u32, u32) = (17, 17);
@@ -1079,10 +1256,16 @@ struct RoomBlockColors {
 fn room_block_colors(color: RoomColor) -> RoomBlockColors {
     match color {
         RoomColor::Blue => RoomBlockColors {
-            background: (141, 137, 196),
-            inner: (78, 83, 148),
-            border: (55, 58, 103),
-            outer_border: (33, 35, 63),
+            background: (161, 159, 194),
+            inner: (98, 103, 153),
+            border: (77, 81, 122),
+            outer_border: (44, 46, 77),
+        },
+        RoomColor::Green => RoomBlockColors {
+            background: (152, 171, 164),
+            inner: (99, 153, 135),
+            border: (77, 120, 105),
+            outer_border: (44, 77, 66),
         },
     }
 }
@@ -1160,6 +1343,7 @@ fn parse_room(level: &str) -> Room {
                 ' ' => Tile::Empty,
                 '#' => Tile::Solid,
                 'B' => Tile::Room(RoomColor::Blue),
+                'G' => Tile::Room(RoomColor::Green),
                 c @ _ => {
                     panic!("Unrecognized tile identifier '{}'", c);
                 }

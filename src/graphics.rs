@@ -15,6 +15,7 @@ use crate::{
 pub struct Vertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
+    pub color: [f32; 4],
 }
 
 #[derive(Clone)]
@@ -124,31 +125,42 @@ pub fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out:
         Vertex {
             position: transform(vertex_rect.min()),
             uv: [uv_rect.min_x(), uv_rect.max_y()],
+            color: [1., 1., 1., 1.],
         },
         Vertex {
             position: transform(point2(vertex_rect.max_x(), vertex_rect.min_y())),
             uv: [uv_rect.max_x(), uv_rect.max_y()],
+            color: [1., 1., 1., 1.],
         },
         Vertex {
             position: transform(point2(vertex_rect.min_x(), vertex_rect.max_y())),
             uv: [uv_rect.min_x(), uv_rect.min_y()],
+            color: [1., 1., 1., 1.],
         },
         Vertex {
             position: transform(point2(vertex_rect.max_x(), vertex_rect.min_y())),
             uv: [uv_rect.max_x(), uv_rect.max_y()],
+            color: [1., 1., 1., 1.],
         },
         Vertex {
             position: transform(vertex_rect.max()),
             uv: [uv_rect.max_x(), uv_rect.min_y()],
+            color: [1., 1., 1., 1.],
         },
         Vertex {
             position: transform(point2(vertex_rect.min_x(), vertex_rect.max_y())),
             uv: [uv_rect.min_x(), uv_rect.min_y()],
+            color: [1., 1., 1., 1.],
         },
     ]);
 }
 
-pub fn render_quad(rect: Box2D<f32>, tex_coords: TextureRect, out: &mut Vec<Vertex>) {
+pub fn render_quad(
+    rect: Box2D<f32>,
+    tex_coords: TextureRect,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
     let uv_pos = point2(
         tex_coords[0] as f32 / TEXTURE_ATLAS_SIZE.width as f32,
         tex_coords[1] as f32 / TEXTURE_ATLAS_SIZE.height as f32,
@@ -163,26 +175,32 @@ pub fn render_quad(rect: Box2D<f32>, tex_coords: TextureRect, out: &mut Vec<Vert
         Vertex {
             position: rect.min.to_array(),
             uv: [uv_rect.min_x(), uv_rect.max_y()],
+            color,
         },
         Vertex {
             position: [rect.max.x, rect.min.y],
             uv: [uv_rect.max_x(), uv_rect.max_y()],
+            color,
         },
         Vertex {
             position: [rect.min.x, rect.max.y],
             uv: [uv_rect.min_x(), uv_rect.min_y()],
+            color,
         },
         Vertex {
             position: [rect.max.x, rect.min.y],
             uv: [uv_rect.max_x(), uv_rect.max_y()],
+            color,
         },
         Vertex {
             position: rect.max.to_array(),
             uv: [uv_rect.max_x(), uv_rect.min_y()],
+            color,
         },
         Vertex {
             position: [rect.min.x, rect.max.y],
             uv: [uv_rect.min_x(), uv_rect.min_y()],
+            color,
         },
     ]);
 }

@@ -1,16 +1,24 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use anyhow::Error;
 use lewton::inside_ogg::OggStreamReader;
 
 pub struct Mixer {
-    playing: Arc<Mutex<Vec<AudioInstance>>>,
+    playing: Arc<Mutex<HashMap<usize, AudioInstance>>>,
+    next_id: AtomicUsize,
 }
 
 impl Default for Mixer {
     fn default() -> Self {
         Self {
-            playing: Arc::new(Mutex::new(Vec::new())),
+            playing: Arc::new(Mutex::new(HashMap::new())),
+            next_id: AtomicUsize::new(0),
         }
     }
 }
@@ -30,7 +38,7 @@ impl Mixer {
         })
     }
 
-    pub fn play(&self, audio: &Audio, volume: f32, do_loop: bool) {
+    pub fn play(&self, audio: &Audio, volume: f32, do_loop: bool) -> AudioInstanceHandle {
         let instance = AudioInstance {
             audio: Audio {
                 buffer: audio.buffer.clone(),
@@ -39,14 +47,34 @@ impl Mixer {
             volume,
             do_loop,
         };
-        self.playing.lock().unwrap().push(instance);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.playing.lock().unwrap().insert(id, instance);
+        AudioInstanceHandle(id)
+    }
+
+    pub fn stop(&self, handle: &AudioInstanceHandle) {
+        self.playing.lock().unwrap().remove(&handle.0);
+    }
+
+    pub fn set_volume(&self, handle: &AudioInstanceHandle, volume: f32) {
+        let mut instances = self.playing.lock().unwrap();
+        if let Some(instance) = instances.get_mut(&handle.0) {
+            instance.volume = volume;
+        };
+    }
+
+    pub fn set_looping(&self, handle: &AudioInstanceHandle, do_loop: bool) {
+        let mut instances = self.playing.lock().unwrap();
+        if let Some(instance) = instances.get_mut(&handle.0) {
+            instance.do_loop = do_loop;
+        };
     }
 
     pub fn poll(&self, out: &mut [i16]) {
         let mut instances = self.playing.lock().unwrap();
 
         let mut finished = Vec::new();
-        for (i, instance) in instances.iter_mut().enumerate() {
+        for (id, instance) in instances.iter_mut() {
             let requested_samples = out.len();
             let remaining_samples = if instance.do_loop {
                 requested_samples
@@ -61,13 +89,13 @@ impl Mixer {
                     .floor() as i16;
             }
             if requested_samples >= remaining_samples && !instance.do_loop {
-                finished.push(i);
+                finished.push(*id);
             } else {
-                instance.index += requested_samples;
+                instance.index = (instance.index + requested_samples) % instance.audio.buffer.len();
             }
         }
-        for i in finished.into_iter().rev() {
-            instances.swap_remove(i);
+        for id in finished.into_iter().rev() {
+            instances.remove(&id);
         }
     }
 }
@@ -82,3 +110,5 @@ pub struct AudioInstance {
     volume: f32,
     do_loop: bool,
 }
+
+pub struct AudioInstanceHandle(usize);
